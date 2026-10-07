@@ -22,7 +22,7 @@ ever be bought, won, or cashed out.
   panel — and they **step aside automatically** whenever a real player needs the seat.
 - **Realtime multiplayer** — authoritative server engine (seeded, hash-committed shuffles),
   Socket.IO transport, reconnect + multi-device takeover, spectator mode.
-- **Built-in chat** — emotes, quick phrases, system feed, EN/ID profanity filter, host
+- **Built-in chat** — emotes, quick phrases, system feed, host
   moderation (mute/kick/ban), anti-solicitation filter.
 - **Tournaments** — Sit & Go + multi-table MTT: blind schedules with level countdown,
   rebuys, auto seating & rebalancing, bust ranks, payouts (play-chips), season points.
@@ -32,7 +32,6 @@ ever be bought, won, or cashed out.
   log download; last-hand replay.
 - **Mobile-first** — responsive table with rotated seat view, PWA manifest, safe-area
   support, thumb-zone action bar. Works on PC, Android, iOS.
-- **EN + ID** — full English/Bahasa Indonesia UI toggle.
 
 ## Architecture
 
