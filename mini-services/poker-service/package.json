@@ -1,0 +1,13 @@
+{
+  "name": "poker-kings-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.js",
+    "start": "bun index.js",
+    "test": "bun ../../scripts/engine-baseline-run.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}
