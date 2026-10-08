@@ -1,17 +1,6 @@
 import Script from "next/script";
-import { Space_Grotesk, Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-const display = Space_Grotesk({
-    variable: "--font-display",
-    subsets: ["latin"],
-    weight: ["400", "500", "700"],
-});
-const body = Inter({
-    variable: "--font-body",
-    subsets: ["latin"],
-    weight: ["400", "500", "700", "900"],
-});
 export const metadata = {
     title: "Poker Kings: Free Stay or Pass Showdowns",
     description: "Free online card game with friends. No ads, no downloads. Hold'em & Omaha hand rankings, stay-or-pass showdowns, chat, tournaments, achievements. Points only, never money.",
@@ -61,7 +50,7 @@ const THEME_BOOTSTRAP = `
 `;
 export default function RootLayout({ children }) {
     return (<html lang="en" className="dark" suppressHydrationWarning>
-      <body className={`${display.variable} ${body.variable} antialiased`}>
+      <body className="antialiased">
         {/* Centrally hosted platform files, loaded by relative path — never vendored.
             The bridge is how the app ANSWERS the platform shell, so it loads unconditionally. */}
         <Script src="/usernode-bridge/v1/bridge.js" strategy="beforeInteractive"/>
