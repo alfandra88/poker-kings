@@ -1,228 +1,162 @@
+#!/usr/bin/env node
+// Poker Squares engine baseline: scoring table, seeded round simulation,
+// rule checks, and a stable digest of every round event.
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { PokerTable } from "../src/lib/poker-engine/table.js";
-import { buildPots, refundUncalled, splitPot } from "../src/lib/poker-engine/pots.js";
-import { deckFromSeed, eval5, evalBest, evalOmaha, mulberry32, shuffleDeck, freshDeck, seedToHex, cardText, } from "../src/lib/poker-engine/cards.js";
+import { deckFromSeed } from "../src/lib/poker-engine/cards.js";
+import { scoreLine, scoreGrid, HAND_POINTS, emptyGrid, CELLS } from "../src/lib/squares-engine/scoring.js";
+import { SquaresRound, rankResults } from "../src/lib/squares-engine/round.js";
+import { chooseCell } from "../src/lib/squares-engine/ai.js";
+import { mulberry32 } from "../src/lib/poker-engine/cards.js";
 
-const lines = [];
-function emit(s) {
-    lines.push(s);
+let failures = 0;
+function check(cond, msg) {
+    if (!cond) {
+        failures++;
+        console.error("FAIL:", msg);
+    }
 }
+// card = rank * 4 + suit; ranks 0..12 = 2..A; suits 0..3 = spade, heart, diamond, club
+const C = (s) => {
+    const R = "23456789TJQKA";
+    const S = "shdc";
+    return R.indexOf(s[0]) * 4 + S.indexOf(s[1]);
+};
+const L = (str) => str.split(" ").map(C);
 
-function canonical(v) {
-    return JSON.stringify(v, (_k, val) => {
-        if (typeof val === "object" && val !== null && !Array.isArray(val)) {
-            const o = val;
-            return Object.keys(o)
-                .sort()
-                .reduce((acc, k) => {
-                acc[k] = o[k];
-                return acc;
-            }, {});
-        }
-        return val;
-    });
+const CASES = [
+    ["Ts Js Qs Ks As", "royal_flush"],
+    ["9h Th Jh Qh Kh", "straight_flush"],
+    ["Ad 2d 3d 4d 5d", "straight_flush"],
+    ["7s 7h 7d 7c 2s", "quads"],
+    ["Ks Kh Kd 4c 4s", "full_house"],
+    ["2c 7c 9c Jc Kc", "flush"],
+    ["As 2h 3d 4c 5s", "straight"],
+    ["Ts Jh Qd Kc As", "straight"],
+    ["9s 9h 9d 2c 5s", "trips"],
+    ["9s 9h 4d 4c 5s", "two_pair"],
+    ["9s 9h 4d 3c 5s", "pair"],
+    ["2s 7h 9d Jc Ks", "nothing"],
+    ["Qs Kh Ad 2c 3s", "nothing"],
+];
+for (const [cards, key] of CASES) {
+    const res = scoreLine(L(cards));
+    check(res && res.key === key, `scoreLine(${cards}) = ${res?.key}, expected ${key}`);
+    check(res && res.points === HAND_POINTS[key], `points for ${cards}`);
 }
+check(scoreLine(L("2s 3s 4s 5s")) === null, "a 4-card line does not score");
 
-function makeDeps(seed) {
-    const rng = mulberry32(seed);
-    const events = [];
-    const payouts = [];
-    let clock = 1_700_000_000_000;
-    const pending = [];
-    let nextId = 1;
-    const deps = {
+// A grid whose rows are the first five cases and whose columns are known.
+const grid = [];
+for (const [cards] of CASES.slice(0, 5)) grid.push(...L(cards));
+const g = scoreGrid(grid);
+check(g.rows.map((r) => r.key).join(",") === "royal_flush,straight_flush,straight_flush,quads,full_house", "row keys");
+check(g.total === g.rows.reduce((s, r) => s + r.points, 0) + g.cols.reduce((s, c) => s + c.points, 0), "scoreGrid sums 10 lines");
+check(g.bestLine === "royal_flush", "best line");
+
+check(JSON.stringify(rankResults([{ id: "a", points: 10 }, { id: "b", points: 30 }, { id: "c", points: 10 }]).map((r) => r.place)) === "[1,2,2]", "ties share a place");
+
+// Seeded rounds on a fake clock.
+function fakeTimers() {
+    let now = 0;
+    const q = [];
+    return {
         timers: {
-            schedule(fn, ms) {
-                const id = nextId++;
-                pending.push({ id, fn, at: clock + ms });
-                return id;
+            schedule: (fn, ms) => {
+                const h = { at: now + ms, fn };
+                q.push(h);
+                return h;
             },
-            cancel(handle) {
-                const i = pending.findIndex((p) => p.id === handle);
-                if (i >= 0)
-                    pending.splice(i, 1);
+            cancel: (h) => {
+                const i = q.indexOf(h);
+                if (i >= 0) q.splice(i, 1);
             },
-            now() {
-                return clock;
-            },
+            now: () => now,
         },
-        random: rng,
-        sha256: (hex) => {
-            let h = 0x811c9dc5;
-            for (let i = 0; i < hex.length; i++) {
-                h ^= hex.charCodeAt(i);
-                h = Math.imul(h, 0x01000193) >>> 0;
-            }
-            return h.toString(16).padStart(8, "0");
+        runNext() {
+            q.sort((a, b) => a.at - b.at);
+            const h = q.shift();
+            if (!h) return false;
+            now = h.at;
+            h.fn();
+            return true;
         },
-        broadcast(ev) {
-            events.push(ev);
-        },
-        onStateDirty() { },
-        onPlayersLeft() { },
-        onPayout(p) {
-            payouts.push(p);
-        },
-        onHandEnd() { },
-    };
-    return {
-        deps,
-        events,
-        payouts,
-        advance: (ms) => {
-            clock += ms;
-        },
-        drain() {
-            while (pending.length && pending[0].at <= clock)
-                pending.shift().fn();
-        },
-    };
-}
-function baseConfig(maxSeats, variant, mode) {
-    return {
-        name: "Baseline",
-        variant,
-        mode,
-        maxSeats,
-        smallBlind: 5,
-        bigBlind: 10,
-        ante: 0,
-        minBuyIn: 20,
-        maxBuyIn: 0,
-        startingStack: 1000,
-        actionTimerSec: 30,
-        timeBankSec: 30,
-        straddle: false,
-        runItTwice: false,
-        rabbitHunt: false,
-        revealAllIn: false,
-        showLosingHand: false,
-        approveJoin: false,
-        spectatorCards: false,
-        entryFee: 0,
     };
 }
 
-function runTable(seed, seats, variant, mode) {
-    const { deps, events, payouts, advance, drain } = makeDeps(seed);
-    const table = new PokerTable("BASE01", baseConfig(seats, variant, mode), deps, { playerId: "p0", nickname: "Host", avatar: "A" });
-    for (let i = 1; i < seats; i++) {
-        const r = table.sitDown(i, { playerId: `p${i}`, nickname: `P${i}`, avatar: "B" }, 1000);
-        emit(`sit ${i} ${canonical(r)}`);
-    }
-    let guard = 0;
-    for (let h = 0; h < 12 && guard < 20000; h++) {
-        advance(60_000);
-        drain();
-        table.tryStartHand();
-        let inner = 0;
-        while (guard < 20000 && inner < 250) {
-            guard++;
-            inner++;
-            const snap = table.snapshotFor({ playerId: "p0", isSpectator: false });
-            if (!snap)
-                break;
-            emit(`S${h} ${canonical(snap)}`);
-            if (snap.status !== "running" || snap.toAct == null)
-                break;
-            const actSeat = snap.seats[snap.toAct];
-            if (!actSeat)
-                break;
-            // NOTE: snapshots redact other humans' playerId into seatUid (privacy),
-            const pid = `p${snap.toAct}`;
-            const legal = table.legalActionsFor(snap.toAct);
-            emit(`L${h} ${snap.handNo} ${snap.toAct} ${canonical(legal)}`);
-            const seedish = (seed + h * 31 + snap.toAct * 7 + inner) % 100;
-            let type;
-            let to;
-            if (seedish < 25)
-                type = "fold";
-            else if (seedish < 55)
-                type = "call";
-            else if (legal.canRaise) {
-                type = "raise";
-                to =
-                    legal.minRaiseTo +
-                        ((seedish * 13) % Math.max(1, legal.maxRaiseTo - legal.minRaiseTo));
+const digest = createHash("sha256");
+let lines = 0;
+for (let players = 1; players <= 8; players++) {
+    for (const seed of [1, 7, 42, 9001]) {
+        const deck = deckFromSeed(seed);
+        const ids = Array.from({ length: players }, (_, i) => `p${i}`);
+        const clock = fakeTimers();
+        let done = null;
+        const dealt = [];
+        const round = new SquaresRound({
+            deck, playerIds: ids, timerMs: 15000,
+            deps: {
+                timers: clock.timers,
+                onEvent: (ev) => {
+                    digest.update(JSON.stringify(ev));
+                    lines++;
+                    if (ev.t === "deal") dealt.push(ev.card);
+                },
+                onDone: (r) => { done = r; },
+            },
+        });
+        round.start();
+        const rng = mulberry32(seed + players);
+        // Player 0 always times out; the rest place with the AI.
+        let guard = 0;
+        while (round.phase === "placing" && guard++ < 200) {
+            for (const id of ids.slice(1)) {
+                const gr = round.grid(id).slice();
+                const cell = chooseCell(gr, round.card, { skill: ["easy", "normal", "hard"][players % 3], unseen: deck.slice(round.index + 1), random: rng });
+                const res = round.place(id, cell);
+                check(res.ok, `AI placement accepted (${res.error})`);
             }
-            else if (legal.canBet) {
-                type = "bet";
-                to = legal.minRaiseTo;
+            if (round.phase === "placing") {
+                if (ids.length > 1) {
+                    const taken = round.grid("p1").findIndex((c) => c !== null);
+                    if (taken >= 0) check(!round.place("p1", taken).ok, "placing twice in one card is rejected");
+                }
+                clock.runNext();
             }
-            else if (legal.canCheck)
-                type = "check";
-            else if (legal.canCall)
-                type = "call";
-            else
-                type = "fold";
-            if ((type === "raise" || type === "bet") && (to == null || to < legal.minRaiseTo)) {
-                type = legal.canCheck ? "check" : "call";
-                to = undefined;
-            }
-            if (type === "call" && !legal.canCall) {
-                type = legal.canCheck ? "check" : legal.canFold ? "fold" : "call";
-                to = undefined;
-            }
-            const res = table.act(pid, type, to);
-            emit(`A ${pid} ${type} ${to ?? "-"} ${canonical(res)}`);
-            if (!res.ok)
-                break;
-            advance(1000);
-            drain();
         }
+        check(done !== null, `round finished (${players} players, seed ${seed})`);
+        check(dealt.length === CELLS, "25 cards dealt");
+        check(JSON.stringify(dealt) === JSON.stringify(deck.slice(0, 25)), "every player gets the same deck order");
+        for (const id of ids) {
+            const gr = round.grid(id);
+            check(gr.every((c) => c !== null), "grid full");
+            check(new Set(gr).size === 25, "25 distinct cards");
+            check(JSON.stringify([...gr].sort((a, b) => a - b)) === JSON.stringify(deck.slice(0, 25).sort((a, b) => a - b)), "grid holds exactly the dealt cards");
+        }
+        const p0 = round.grid("p0");
+        check(JSON.stringify(p0) === JSON.stringify(deck.slice(0, 25)), "timed-out player fills cells left to right");
+        digest.update(JSON.stringify(done.map((r) => [r.id, r.points, r.place])));
     }
-    emit(`EVENTS ${canonical(events)}`);
-    emit(`PAYOUTS ${canonical(payouts)}`);
-    emit(`FINAL ${canonical(table.snapshotFor({ playerId: "p0", isSpectator: false }))}`);
-    emit(`EXPORTED ${canonical(table.exportEvents())}`);
 }
 
-function runPure() {
-    const rng = mulberry32(42);
-    for (let d = 0; d < 40; d++) {
-        const deck = shuffleDeck(freshDeck(), rng);
-        emit(`DECK ${d} ${canonical(deck)}`);
-        emit(`SEED ${seedToHex(d * 7919)} ${canonical(deckFromSeed(d * 7919))}`);
-        const hand = deck.slice(0, 5);
-        emit(`EVAL5 ${d} ${canonical(eval5(hand[0], hand[1], hand[2], hand[3], hand[4]))}`);
-        emit(`TEXT ${d} ${cardText(hand[0])} ${cardText(hand[4])}`);
-    }
-    for (let h = 0; h < 60; h++) {
-        const hole = Array.from({ length: 2 }, () => Math.floor(rng() * 52));
-        const board = Array.from({ length: 5 }, () => Math.floor(rng() * 52));
-        emit(`EVALBEST ${h} ${canonical(evalBest([...hole, ...board]))}`);
-        emit(`EVALOMAHA ${h} ${canonical(evalOmaha(hole, board))}`);
-    }
-    for (let c = 0; c < 80; c++) {
-        const n = 2 + (c % 5);
-        const commits = Array.from({ length: n }, (_, i) => ({
-            seat: i,
-            playerId: `p${i}`,
-            amount: Math.floor(rng() * 500),
-        }));
-        emit(`REFUND ${c} ${canonical(refundUncalled(commits))}`);
-        emit(`POTS ${c} ${canonical(buildPots(commits))}`);
-        if (c % 10 === 0) {
-            for (const p of buildPots(commits)) {
-                emit(`SPLIT ${c} ${p.seat} ${canonical(splitPot(p, commits, () => false))}`);
-                emit(`ODD ${c} ${p.seat} ${canonical(splitPot(p, commits, (s) => s % 3 === 0))}`);
-            }
-        }
-    }
+// Filled cells and off-grid cells are refused.
+{
+    const clock = fakeTimers();
+    const r = new SquaresRound({ deck: deckFromSeed(3), playerIds: ["a"], timerMs: 1000, deps: { timers: clock.timers } });
+    check(!r.place("a", 0).ok, "no placement before the round starts");
+    r.start();
+    check(r.place("a", 0).ok, "first placement");
+    check(!r.place("a", 0).ok, "cell already filled");
+    check(!r.place("a", 25).ok, "cell out of range");
+    check(!r.place("b", 1).ok, "only players in the round may place");
+    r.setAuto("a", true);
+    check(r.phase === "results", "an away player is placed automatically to the end");
 }
-runPure();
-for (const variant of ["nlhe", "plo4"]) {
-    for (const mode of ["cash", "tournament"]) {
-        for (let seats = 2; seats <= 9; seats++) {
-            runTable(1000 + seats * 17 + (variant === "plo4" ? 5 : 0), seats, variant, mode);
-        }
-    }
+
+const hex = digest.digest("hex");
+console.log(`engine: ${lines} events`);
+console.log(`SHA256 ${hex}`);
+if (failures) {
+    console.error(`\nRESULT: ${failures} engine failure(s)`);
+    process.exit(1);
 }
-const digest = lines.join("\n");
-console.log(`LINES ${lines.length}`);
-console.log(`SHA256 ${createHash("sha256").update(digest).digest("hex")}`);
-if (process.env.BASELINE_OUT) {
-    writeFileSync(process.env.BASELINE_OUT, digest, "utf8");
-    console.log(`WROTE ${process.env.BASELINE_OUT}`);
-}
+console.log("RESULT: engine baseline ok");

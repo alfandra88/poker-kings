@@ -1,0 +1,26 @@
+{
+  "name": "Poker Kings",
+  "description": "Poker Squares with friends: same cards, your 5×5 grid, points only",
+  "secrets": [],
+  "tests": [
+    {
+      "id": "home.default",
+      "name": "Home renders",
+      "path": "/",
+      "expectSelector": "[data-testid=\"btn-quick-play\"]",
+      "expectText": "Build the best poker hands in a 5×5 grid",
+      "visual": true,
+      "impact": ["src/components/poker/HomeView.jsx", "src/lib/poker/i18n/en.js"]
+    },
+    {
+      "name": "Contest page renders",
+      "path": "/room/5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "expectText": "Staging demo contest"
+    },
+    {
+      "name": "Invalid contest id",
+      "path": "/room/nope",
+      "expectText": "Invalid"
+    }
+  ]
+}

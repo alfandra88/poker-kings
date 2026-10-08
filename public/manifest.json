@@ -1,7 +1,7 @@
 {
-  "name": "Poker Kings — Free Poker with Friends",
+  "name": "Poker Kings: Poker Squares with friends",
   "short_name": "Poker Kings",
-  "description": "Free online poker with friends. No ads, no deposits, play money only.",
+  "description": "Everyone gets the same 25 cards. Build the best poker hands in your 5x5 grid. Points only.",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",
