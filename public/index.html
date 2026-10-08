@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Poker Kings: Hand Ranking</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/usernode-bridge/v1/bridge.js"></script>
+  <script>
+    (function () {
+      var media = window.matchMedia('(prefers-color-scheme: dark)');
+      function applyTheme() {
+        var theme = (window.usernode && window.usernode.theme) || (media.matches ? 'dark' : 'light');
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+        document.documentElement.style.colorScheme = theme;
+      }
+      applyTheme();
+      window.addEventListener('usernode:theme-changed', applyTheme);
+      media.addEventListener('change', applyTheme);
+    })();
+  </script>
+  <script>
+    // usernode-dev-console@1
+    (function () {
+      function send(level, args) {
+        try {
+          window.parent.postMessage({ type: 'usernode-dev-console', level: level, args: Array.prototype.map.call(args, String) }, '*');
+        } catch (e) { /* no parent frame */ }
+      }
+      ['log', 'warn', 'error'].forEach(function (level) {
+        var orig = console[level];
+        console[level] = function () { send(level, arguments); orig.apply(console, arguments); };
+      });
+      window.addEventListener('error', function (e) { send('error', [e.message]); });
+    })();
+  </script>
+</head>
+<body>
+  <header class="bar">
+    <h1>Poker Kings</h1>
+    <div class="score" aria-live="polite">
+      <span id="who"></span>
+      <span id="points" hidden></span>
+    </div>
+  </header>
+  <nav class="tabs" aria-label="Sections">
+    <button type="button" data-tab="play" aria-current="page">Play</button>
+    <button type="button" data-tab="rooms">Rooms</button>
+    <button type="button" data-tab="leaders">Leaderboard</button>
+  </nav>
+  <main id="main"></main>
+  <script src="/app.js"></script>
+</body>
+</html>

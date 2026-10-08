@@ -1,19 +1,10 @@
 {
-  "name": "Poker Kings — Free Poker with Friends",
+  "name": "Poker Kings: Hand Ranking",
   "short_name": "Poker Kings",
-  "description": "Free online poker with friends. No ads, no deposits, play money only.",
+  "description": "Rank poker hands, earn points and climb the leaderboard. No betting.",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "any",
-  "background_color": "#0b0d10",
-  "theme_color": "#0b0d10",
-  "categories": ["games", "entertainment"],
-  "icons": [
-    {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
-    }
-  ]
+  "background_color": "#0f1216",
+  "theme_color": "#0f1216",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

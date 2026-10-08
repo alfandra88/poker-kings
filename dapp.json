@@ -1,0 +1,9 @@
+{
+  "name": "Poker Kings",
+  "description": "Rank poker hands, earn points and climb the leaderboard. No betting.",
+  "secrets": [],
+  "tests": [
+    { "id": "play.home", "name": "Hand ranking question loads", "path": "/", "expectText": "Which hand wins?", "visual": true, "impact": ["public/**", "server.js", "lib/**"] },
+    { "name": "Room page loads", "path": "/room/DEMO22", "expectSelector": "#main" }
+  ]
+}
