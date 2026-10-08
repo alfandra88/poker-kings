@@ -1,0 +1,7 @@
+{
+  "secrets": [],
+  "visibility": {
+    "build": "public",
+    "view": "public"
+  }
+}
