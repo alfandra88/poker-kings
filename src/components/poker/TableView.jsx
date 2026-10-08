@@ -12,26 +12,23 @@ import { HostPanel } from "./HostPanel.jsx";
 import { LanguageDialog } from "./LanguageDialog.jsx";
 import { ThemeToggle } from "./ThemeToggle.jsx";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, } from "@/components/ui/dialog";
-import { Slider } from "@/components/ui/slider";
 
 const PROMPT_BASE_PX = 80;
 export function TableView() {
     const t = usePoker((s) => s.t);
     const lang = usePoker((s) => s.lang);
     const snap = usePoker((s) => s.snap);
-    const me = usePoker((s) => s.me);
     const emit = usePoker((s) => s.emit);
     const leaveTable = usePoker((s) => s.leaveTable);
     const setStore = usePoker((s) => s.set);
     const log = usePoker((s) => s.log);
-    const rabbit = usePoker((s) => s.rabbit);
     const joinRequest = usePoker((s) => s.joinRequest);
     const room = usePoker((s) => s.room);
+    const guest = usePoker((s) => s.guest);
     const router = useRouter();
     const [hostOpen, setHostOpen] = useState(false);
     const [langOpen, setLangOpen] = useState(false);
     const [sitSeat, setSitSeat] = useState(null);
-    const [buyIn, setBuyIn] = useState(0);
     const [copied, setCopied] = useState(false);
     const [feltRef, feltSize] = useElementSize();
     const [barRef, barSize] = useElementSize();
@@ -56,19 +53,12 @@ export function TableView() {
         ? dealerPuckPos(ring(snap.buttonSeat).theta, feltSize.w, feltSize.h, metrics.rxPx, metrics.ryPx, cyPct, podScale)
         : null;
     const isHost = snap.seats.some((s) => s?.isHost && s?.self);
-    const isCash = snap.mode === "cash";
-    const minBuy = isCash ? snap.config.minBuyIn : 0;
-    const maxBuy = isCash ? (snap.config.maxBuyIn > 0 ? Math.min(snap.config.maxBuyIn, me?.chips ?? 0) : me?.chips ?? 0) : 0;
     const lastPayout = [...log].reverse().find((e) => e.t === "payout");
     const championShowing = room?.status === "completed" && !!room.winner && room.tables.some((tc) => tc.code === snap.code);
-    const showWinner = !championShowing && (snap.stage === "lobby" || snap.stage === "payout");
+    const showWinner = !championShowing && (snap.stage === "lobby" || snap.stage === "river");
     const actionBarPx = barSize.h >= 40 ? Math.round(barSize.h) : PROMPT_BASE_PX;
     const promptBottomPx = actionBarPx + (mySeat ? holeRowH(metrics.holeSize) : 0) + 8;
-    const ritVisible = !!snap.ritPrompt && !!mySeat &&
-        snap.ritPrompt.votes[String(mySeat.seatId)] === undefined &&
-        snap.stage !== "lobby";
     const joinVisible = !!(joinRequest && isHost);
-    const rebuyVisible = !!room?.canRebuy;
     const copyLink = () => {
         const url = `${window.location.origin}/?t=${snap.code}`;
         navigator.clipboard?.writeText(url).catch(() => { });
@@ -78,8 +68,7 @@ export function TableView() {
     const confirmSit = async () => {
         if (sitSeat === null)
             return;
-        const res = await emit("seat:sit", { seatId: sitSeat, buyIn: isCash ? buyIn : undefined });
-        void res;
+        await emit("seat:sit", { seatId: sitSeat });
         setSitSeat(null);
     };
     return (<div className="h-[100dvh] flex flex-col bg-transparent text-[var(--text-1)] overflow-hidden">
@@ -94,10 +83,8 @@ export function TableView() {
         <div className="min-w-0 flex-1 text-center">
           <div className="text-[11px] sm:text-[12px] font-semibold truncate">{snap.name}</div>
           <div className="text-[9.5px] sm:text-[10px] text-white/45 tabular-nums">
-            {snap.mode === "tournament" && snap.levelEndsAt ? (<LevelCountdown endsAt={snap.levelEndsAt} levelIdx={snap.levelIdx} blinds={`${snap.config.smallBlind}/${snap.config.bigBlind}`} t={t}/>) : (<>
-                {t("table.blinds")} {snap.config.smallBlind}/{snap.config.bigBlind}
-                {snap.config.ante > 0 ? ` · ${snap.config.ante}` : ""} · #{snap.handNo}
-              </>)}
+            {snap.mode === "tournament" ? `${t("common.tournament")} · ` : ""}
+            {snap.variant.toUpperCase()} · {t("table.hand")} #{snap.handNo}
           </div>
         </div>
         {snap.status === "paused" && (<span className="text-[9px] font-black tracking-widest bg-gradient-to-b from-[var(--gold-bright)] to-[var(--gold)] text-black px-1.5 py-0.5 rounded shrink-0">{t("table.paused")}</span>)}
@@ -137,49 +124,26 @@ export function TableView() {
                 <span className="text-[6vw] font-black tracking-[0.34em] text-white/[0.05] select-none">POKER KINGS</span>
               </div>
 
-              {snap.pot > 0 && (<div className="absolute left-1/2 z-10" style={{ top: "43%", transform: `translate(-50%, 0) scale(${stackScale})`, transformOrigin: "top center" }}>
-                  <div className="flex items-center gap-1.5 rounded-full bg-black/60 border border-[var(--gold)]/25 px-3 py-1 pot-glow backdrop-blur">
-                    <span className="chip-dot chip-dot-lg"/>
-                    <span className="text-[13px] font-black text-gradient-gold tabular-nums" data-testid="pot">
-                      {fmt(snap.pot, lang)}
-                    </span>
-                  </div>
-                </div>)}
-
               {/* dealer button */}
               {snap.buttonSeat !== null && dealerPos?.visible && (<div className="absolute -translate-x-1/2 -translate-y-1/2 z-20" style={{ left: `${dealerPos.x}%`, top: `${dealerPos.y}%` }} data-testid="dealer-button" title="Dealer">
                   <div className="dealer-puck">D</div>
                 </div>)}
 
-              <div className="absolute left-1/2 z-10" style={{ top: "51%", transform: `translate(-50%, 0) scale(${stackScale})`, transformOrigin: "top center" }}>
-                <div className="flex flex-col items-center gap-1.5">
-                  <div className="flex gap-1 min-h-[44px] items-center">
-                    {snap.board.map((c, i) => (<PlayingCard key={`${snap.handNo}-b${i}-${c}`} card={c} size="sm" delay={i * 110}/>))}
-                    {/* undealt board slots keep the felt layout stable and readable */}
-                    {liveBoard(snap) &&
+              <div className="absolute left-1/2 z-10" style={{ top: "47%", transform: `translate(-50%, 0) scale(${stackScale})`, transformOrigin: "top center" }}>
+                <div className="flex gap-1 min-h-[44px] items-center">
+                  {snap.board.map((c, i) => (<PlayingCard key={`${snap.handNo}-b${i}-${c}`} card={c} size="sm" delay={i * 110}/>))}
+                  {/* undealt board slots keep the felt layout stable and readable */}
+                  {liveBoard(snap) &&
             Array.from({ length: 5 - snap.board.length }).map((_, i) => (<div key={`slot-${i}`} className="board-slot" aria-hidden/>))}
-                  </div>
-                  {snap.board2.length > 0 && (<div className="flex flex-col items-center gap-0.5">
-                      <span className="text-[8px] uppercase tracking-widest text-white/40">{t("table.ritBoard")}</span>
-                      <div className="flex gap-1">
-                        {snap.board2.map((c, i) => (<PlayingCard key={`${snap.handNo}-b2${i}-${c}`} card={c} size="sm" delay={i * 110}/>))}
-                      </div>
-                    </div>)}
-                  {rabbit && rabbit.cards.length > 0 && (<div className="flex flex-col items-center gap-0.5 opacity-75">
-                      <span className="text-[8px] uppercase tracking-widest text-white/40">🐇 {t("table.wouldHave")}</span>
-                      <div className="flex gap-1">
-                        {rabbit.cards.map((c, i) => (<PlayingCard key={`r${i}`} card={c} size="sm" dim delay={i * 80}/>))}
-                      </div>
-                    </div>)}
                 </div>
               </div>
 
               {showWinner && lastPayout?.winners && lastPayout.winners.length > 0 && (
 
-        <div className="absolute left-1/2 top-[47%] z-30 w-max max-w-[92%]" style={{ transform: `translate(-50%, -50%) scale(${stackScale})`, transformOrigin: "center center" }} data-testid="winner-banner">
+        <div className="absolute left-1/2 top-[38%] z-30 w-max max-w-[92%]" style={{ transform: `translate(-50%, -50%) scale(${stackScale})`, transformOrigin: "center center" }} data-testid="winner-banner">
                   <div className="anim-pop rounded-2xl glass-strong border border-[var(--gold)]/45 px-4 py-2 text-center">
                     {lastPayout.winners.map((w) => (<div key={w.seat} className="text-[11px] sm:text-[12.5px] font-bold text-gradient-gold whitespace-nowrap overflow-hidden text-ellipsis">
-                        🏆 {snap.seats.find((s) => s?.seatId === w.seat)?.nickname} {t("table.winner")} {fmt(w.amount, lang)}
+                        🏆 {snap.seats.find((s) => s?.seatId === w.seat)?.nickname} +{fmt(w.amount ?? 0, lang)} {t("common.points")}
                         {w.label ? ` · ${formatHandLabel(lang, w.label)}` : ""}
                       </div>))}
                   </div>
@@ -214,26 +178,15 @@ export function TableView() {
 
               {snap.seats.map((seat, i) => {
             const ringPos = ring(i);
-            return seat ? (<SeatPod key={i} seat={seat} total={total} mySeatId={mySeat?.seatId ?? null} isToAct={snap.toAct === seat.seatId} msLeft={snap.toAct === seat.seatId ? snap.msLeft : null} windowMs={turnWindowMs(snap)} isSelf={!!seat.self} scale={podScale} rxPct={rxPct} ryPct={ryPct} cyPct={cyPct} xPct={ringPos.xPct} yPct={ringPos.yPct} lang={lang}/>) : (<EmptySeat key={i} seatId={i} total={total} mySeatId={mySeat?.seatId ?? null} canSit={!mySeat && snap.status !== "closed"} scale={podScale} rxPct={rxPct} ryPct={ryPct} cyPct={cyPct} xPct={ringPos.xPct} yPct={ringPos.yPct} onSit={(sid) => {
-                    setSitSeat(sid);
-                    setBuyIn(isCash ? Math.min(maxBuy, Math.max(minBuy, 0)) : 0);
-                }}/>);
+            return seat ? (<SeatPod key={i} seat={seat} total={total} mySeatId={mySeat?.seatId ?? null} isToAct={snap.toAct === seat.seatId} msLeft={snap.toAct === seat.seatId ? snap.msLeft : null} windowMs={turnWindowMs(snap)} isSelf={!!seat.self} scale={podScale} rxPct={rxPct} ryPct={ryPct} cyPct={cyPct} xPct={ringPos.xPct} yPct={ringPos.yPct} lang={lang}/>) : (<EmptySeat key={i} seatId={i} total={total} mySeatId={mySeat?.seatId ?? null} canSit={!mySeat && !guest && snap.status !== "closed"} scale={podScale} rxPct={rxPct} ryPct={ryPct} cyPct={cyPct} xPct={ringPos.xPct} yPct={ringPos.yPct} onSit={(sid) => setSitSeat(sid)}/>);
         })}
             </div>
 
-            {/* R8+R19 — ONE stacked prompt slot (RIT / join-request / rebuy /
-            rabbit) anchored to the MEASURED action bar (R7), centered over
-            the MAIN COLUMN — not the viewport — so the lg split view keeps
-            prompts on the felt. Children pop in; the container itself
-            carries no animation (fill-mode would freeze its centering). */}
-            {(ritVisible || joinVisible || rebuyVisible || snap.rabbitAvailable) && (<div className="absolute left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 w-max max-w-[92vw]" style={{ bottom: `${promptBottomPx}px` }}>
-                {ritVisible && (<div className="anim-pop glass rounded-2xl px-4 py-3 flex items-center justify-center flex-wrap gap-x-3 gap-y-2 border border-[var(--gold)]/30 w-max max-w-[92vw]" data-testid="rit-prompt">
-                    <span className="text-[13px] font-bold">{t("table.ritTitle")}</span>
-                    <button className="rounded-lg bg-[var(--brand)] text-black text-[12px] font-black px-4 py-1.5" onClick={() => emit("rit:vote", { yes: true })}>{t("common.yes")}</button>
-                    <button className="rounded-lg bg-white/10 text-white text-[12px] font-bold px-4 py-1.5" onClick={() => emit("rit:vote", { yes: false })}>{t("common.no")}</button>
-                  </div>)}
-
-                {joinVisible && (<div className="anim-pop glass rounded-2xl px-4 py-3 border border-[var(--gold)]/40 w-max max-w-[92vw]" data-testid="join-request">
+            {/* R8+R19 — ONE stacked prompt slot (join-request) anchored to the
+            MEASURED action bar (R7), centered over the MAIN COLUMN — not the
+            viewport — so the lg split view keeps prompts on the felt. */}
+            {joinVisible && (<div className="absolute left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 w-max max-w-[92vw]" style={{ bottom: `${promptBottomPx}px` }}>
+                <div className="anim-pop glass rounded-2xl px-4 py-3 border border-[var(--gold)]/40 w-max max-w-[92vw]" data-testid="join-request">
                     <div className="text-[13px] font-semibold mb-2 break-words">{t("join.wants", { name: joinRequest?.nickname ?? "" })}</div>
                     <div className="flex gap-2">
                       <button className="rounded-lg bg-[var(--brand)] text-black text-[12px] font-black px-4 py-1.5" onClick={async () => {
@@ -249,18 +202,7 @@ export function TableView() {
                         {t("common.deny")}
                       </button>
                     </div>
-                  </div>)}
-
-                {rebuyVisible && (<div className="anim-pop glass rounded-2xl px-4 py-3 border border-[var(--danger)]/50 w-max max-w-[92vw]">
-                    <div className="text-[13px] font-semibold mb-2 text-[var(--danger)]">{t("toast.rebuy_offer", { fee: room?.rebuyFee ?? 0 })}</div>
-                    <button className="w-full rounded-lg bg-[var(--gold)] text-black text-[12px] font-black px-4 py-1.5" onClick={() => emit("room:rebuy", { roomId: room?.roomId })} data-testid="btn-rebuy">
-                      {t("tour.rebuyBtn", { fee: fmt(room?.rebuyFee ?? 0, lang) })}
-                    </button>
-                  </div>)}
-
-                {snap.rabbitAvailable && (<button className="anim-pop rounded-full glass border border-[var(--gold)]/40 px-4 py-1.5 text-[12px] font-bold text-[var(--gold)] hover:bg-white/10" onClick={() => emit("rabbit:reveal")} data-testid="btn-rabbit">
-                    🐇 {t("table.rabbit")}
-                  </button>)}
+                  </div>
               </div>)}
           </div>
 
@@ -290,33 +232,18 @@ export function TableView() {
 
       <LanguageDialog open={langOpen} onOpenChange={setLangOpen}/>
 
-      {/* sit / buy-in dialog */}
+      {/* take-a-seat dialog */}
       <Dialog open={sitSeat !== null} onOpenChange={(v) => !v && setSitSeat(null)}>
         <DialogContent className="glass-strong max-w-xs">
           <DialogHeader>
             <DialogTitle className="text-white">{t("table.sitHere")}</DialogTitle>
             <DialogDescription className="text-white/50">
-              {isCash ? `${t("table.buyin")}: ${fmt(minBuy, lang)} – ${fmt(maxBuy, lang)}` : `${t("common.chips")}: ${fmt(snap.config.startingStack, lang)}`}
+              {t("create.stayRule")}
             </DialogDescription>
           </DialogHeader>
-          {isCash && (<>
-              <div className="text-center text-2xl font-black text-gradient-gold tabular-nums">{fmt(buyIn, lang)}</div>
-              <Slider value={[Math.min(100, maxBuy > 0 ? ((buyIn - minBuy) / Math.max(1, maxBuy - minBuy)) * 100 : 0)]} onValueChange={(v) => {
-                const pct = (v[0] ?? 0) / 100;
-                setBuyIn(Math.round(minBuy + (maxBuy - minBuy) * pct));
-            }} min={0} max={100} step={1}/>
-              <div className="grid grid-cols-4 gap-1.5">
-                {[minBuy, Math.round(minBuy * 2), Math.round(minBuy * 4), maxBuy].map((v, i) => (<button key={i} className="btn-ghost rounded-lg py-1 text-[10px] font-semibold text-white/85" onClick={() => setBuyIn(Math.min(maxBuy, v))}>
-                    {fmt(Math.min(maxBuy, v), lang)}
-                  </button>))}
-              </div>
-            </>)}
           <button className="w-full btn-brand rounded-xl font-black py-2.5 text-sm" onClick={confirmSit} data-testid="confirm-sit">
             {t("common.confirm")}
           </button>
-          {me && me.chips < minBuy && isCash && (<button className="w-full btn-gold rounded-xl font-bold py-2 text-[12px]" onClick={() => emit("economy:topUp")}>
-              {t("profile.topup")}
-            </button>)}
         </DialogContent>
       </Dialog>
 
@@ -333,19 +260,4 @@ function liveBoard(snap) {
 
 function turnWindowMs(snap) {
     return Math.max(1, (snap.config.actionTimerSec + snap.config.timeBankSec) * 1000);
-}
-function LevelCountdown({ endsAt, levelIdx, blinds, t, }) {
-    const [left, setLeft] = useState("");
-    useEffect(() => {
-        const tick = () => {
-            const s = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
-            setLeft(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`);
-        };
-        tick();
-        const iv = setInterval(tick, 1000);
-        return () => clearInterval(iv);
-    }, [endsAt]);
-    return (<>
-      {t("table.level")} {levelIdx + 1} · {blinds} · {left}
-    </>);
 }

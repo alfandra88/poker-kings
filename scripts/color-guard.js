@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCAN_DIRS = ["src", "public"];
 const SKIP = new Set(["node_modules", ".next", ".git"]);
 

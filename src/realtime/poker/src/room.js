@@ -1,6 +1,6 @@
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
-import { PokerTable } from "../../../src/lib/poker-engine/table.js";
+import { ShowdownTable } from "../../../lib/poker-engine/showdown.js";
 
 export const ROOM_ID_LENGTH = 40;
 const ROOM_ID_RE = /^[0-9a-f]{40}$/;
@@ -9,7 +9,7 @@ export const MAX_SEATS_PER_TABLE = 8;
 const MAX_PLAYERS = 200;
 
 const UNLIMITED_CAP = 10_000;
-const MIN_START_DELAY_MS = 30_000; const MAX_START_DELAY_MS = 30 * 86_400_000; const STARTING_GRACE_MS = 6_000; const REBUY_WINDOW_MS = 12_000;
+const MIN_START_DELAY_MS = 30_000; const MAX_START_DELAY_MS = 30 * 86_400_000; const STARTING_GRACE_MS = 6_000;
 const NEXT_HAND_DELAY_MS = 1_800;
 const BALANCE_MAX_MOVES = 200; const EVENT_LOG_CAP = 400;
 const SAVE_FILE = "rooms.json";
@@ -51,10 +51,6 @@ export function sanitizeRoomConfig(raw) {
         ? UNLIMITED_CAP
         : clamp(num(raw.maxPlayers, 8), 2, MAX_PLAYERS);
     const seatsPerTable = clamp(num(raw.seatsPerTable, MAX_SEATS_PER_TABLE), 2, MAX_SEATS_PER_TABLE);
-    const startingStack = clamp(num(raw.startingStack, 10_000), 500, 10_000_000);
-    const entryFee = clamp(num(raw.entryFee, 0), 0, 1_000_000);
-    const levelSec = clamp(num(raw.levelSec, raw.turbo ? 300 : 600), 60, 3600);
-    const rebuys = clamp(num(raw.rebuys, 0), 0, 3);
     const turnSec = clamp(num(raw.turnSec, 15), 5, 120);     const extendSec = clamp(num(raw.extendSec, 600), 60, 86_400);
     let requiredPlayers = null;
     let minPlayers = null;
@@ -71,11 +67,6 @@ export function sanitizeRoomConfig(raw) {
         const at = num(raw.startsAt, now + 60 * 60_000);
         startsAt = clamp(at, now + MIN_START_DELAY_MS, now + MAX_START_DELAY_MS);
     }
-    const payoutRaw = Array.isArray(raw.payoutPercents) ? raw.payoutPercents : [];
-    const payoutPercents = payoutRaw
-        .map((p) => num(p, NaN))
-        .filter((p) => Number.isFinite(p) && p > 0 && p <= 1)
-        .slice(0, 20);
     const name = (typeof raw.name === "string" && raw.name.trim().slice(0, 40)) || "Poker Kings Tournament";
     return {
         ok: true,
@@ -84,13 +75,7 @@ export function sanitizeRoomConfig(raw) {
             variant,
             maxPlayers,
             seatsPerTable,
-            startingStack,
-            entryFee,
-            levelSec,
-            turbo: !!raw.turbo,
-            rebuys,
             turnSec,
-            payoutPercents,
             startMode,
             requiredPlayers,
             minPlayers,
@@ -110,9 +95,6 @@ export class Room {
     hostId;
     entrants = new Map();
     tables = [];
-    levelIdx = 0;
-    levelEndsAt = null;
-    prizePool = 0;
     results = [];
     createdAt = Date.now();
     startedAt = null;
@@ -122,7 +104,6 @@ export class Room {
     hooks;
     store;
     dirty = false;
-    hLevel = null;
     hStart = null;
     hFallback = null;
     hStarting = null;
@@ -180,23 +161,7 @@ export class Room {
             // broadcast is best-effort — never let UI pushes break game state
         }
     }
-    get blindsLevels() {
-        const base = this.cfg.startingStack;
-        const bb0 = Math.max(10, Math.round(base / 100));
-        const mk = (i) => ({
-            sb: Math.round((bb0 * Math.pow(1.5, i)) / 2 / 5) * 5 || Math.round((bb0 * Math.pow(1.5, i)) / 2),
-            bb: Math.round((bb0 * Math.pow(1.5, i)) / 5) * 5 || Math.round(bb0 * Math.pow(1.5, i)),
-            ante: i >= 3 ? Math.round((bb0 * Math.pow(1.5, i)) / 10 / 5) * 5 : 0,
-        });
-        const levels = [];
-        for (let i = 0; i < 30; i++)
-            levels.push(mk(i));
-        return levels;
-    }
-    get blinds() {
-        const levels = this.blindsLevels;
-        return levels[Math.min(Math.max(0, this.levelIdx), levels.length - 1)];
-    }
+
     joinableStatus() {
         if (this.status === "waiting" || this.status === "scheduled")
             return true;
@@ -215,28 +180,15 @@ export class Room {
         const totalRegistered = this.entrants.size;
         if (totalRegistered >= this.cfg.maxPlayers)
             return { ok: false, error: "tournament_full" };
-        if (profile.chips < this.cfg.entryFee)
-            return { ok: false, error: "not_enough_chips" };
-        if (this.cfg.entryFee > 0) {
-            profile.chips -= this.cfg.entryFee;
-            this.prizePool += this.cfg.entryFee;
-            this.store.markDirty();
-        }
         const entrant = {
             profile,
             isBot: false,
             botDifficulty: "normal",
             status: "registered",
-            rebuys: 0,
             finalRank: null,
             points: 0,
-            prize: 0,
-            kos: 0,
-            bustAtLevel: null,
-            pendingRebuyUntil: null,
             joinedAt: Date.now(),
             tableCode: null,
-            chipsAtLastHandStart: this.cfg.startingStack,
         };
         this.entrants.set(profile.token, entrant);
         this.log("player_joined", { name: profile.nickname, n: this.entrants.size });
@@ -244,11 +196,6 @@ export class Room {
             const seated = this.seatLateJoin(entrant);
             if (!seated) {
                 this.entrants.delete(profile.token);
-                if (this.cfg.entryFee > 0) {
-                    profile.chips += this.cfg.entryFee;
-                    this.prizePool -= this.cfg.entryFee;
-                    this.store.markDirty();
-                }
                 this.push();
                 return { ok: false, error: "tournament_full" };
             }
@@ -265,11 +212,6 @@ export class Room {
             return { ok: false, error: "not_registered" };
         if (this.status !== "waiting" && this.status !== "scheduled")
             return { ok: false, error: "cannot_leave" };
-        if (this.cfg.entryFee > 0 && !e.isBot) {
-            profile.chips += this.cfg.entryFee;
-            this.prizePool -= this.cfg.entryFee;
-            this.store.markDirty();
-        }
         this.entrants.delete(profile.token);
         this.log("player_left", { name: profile.nickname, n: this.entrants.size });
         this.push();
@@ -308,28 +250,12 @@ export class Room {
             return { ok: false, error: "cannot_cancel" };
         }
         this.clearTimers();
-        this.refundAll();
         this.transition("cancelled");
         this.completedAt = Date.now();
         this.log("room_cancelled", {});
         this.push();
         this.markDirty();
         return { ok: true };
-    }
-    refundAll() {
-        for (const e of this.entrants.values()) {
-            if (e.isBot)
-                continue;
-            const paid = this.cfg.entryFee * (1 + e.rebuys);
-            if (paid > 0) {
-                e.profile.chips += paid;
-                this.prizePool -= paid;
-            }
-            e.rebuys = 0;
-        }
-        if (this.prizePool < 0)
-            this.prizePool = 0;
-        this.store.markDirty();
     }
 
     beginStart(reason) {
@@ -350,7 +276,6 @@ export class Room {
             }
             catch (err) {
                 console.error(`[room ${this.roomId}] seating failed`, err);
-                this.refundAll();
                 this.transition("cancelled");
                 this.completedAt = Date.now();
                 this.push();
@@ -362,7 +287,7 @@ export class Room {
                 this.transition("final_table");
                 this.log("final_table", {});
             }
-            this.startLevel();
+            this.kickOffTables();
             this.push();
             this.markDirty();
         }, STARTING_GRACE_MS);
@@ -392,7 +317,6 @@ export class Room {
         switch (this.cfg.fallback) {
             case "cancel": {
                 this.clearTimers();
-                this.refundAll();
                 this.transition("cancelled");
                 this.completedAt = Date.now();
                 this.log("room_cancelled", { reason: "not_enough_players" });
@@ -455,11 +379,11 @@ export class Room {
         this.hStart = realTimers().schedule(() => this.onScheduledTime(), delay);
     }
     clearTimers() {
-        for (const h of [this.hLevel, this.hStart, this.hFallback, this.hStarting]) {
+        for (const h of [this.hStart, this.hFallback, this.hStarting]) {
             if (h)
                 realTimers().cancel(h);
         }
-        this.hLevel = this.hStart = this.hFallback = this.hStarting = null;
+        this.hStart = this.hFallback = this.hStarting = null;
     }
     addBots(count, difficulty) {
         if (this.status !== "waiting" && this.status !== "scheduled")
@@ -478,16 +402,10 @@ export class Room {
                 isBot: true,
                 botDifficulty: difficulty,
                 status: "registered",
-                rebuys: 0,
                 finalRank: null,
                 points: 0,
-                prize: 0,
-                kos: 0,
-                bustAtLevel: null,
-                pendingRebuyUntil: null,
                 joinedAt: Date.now(),
                 tableCode: null,
-                chipsAtLastHandStart: this.cfg.startingStack,
             });
             added++;
         }
@@ -519,55 +437,22 @@ export class Room {
             token,
             nickname: `${pick(names)}${Math.floor(Math.random() * 90 + 10)}`,
             avatar: `av${Math.floor(Math.random() * 8)}`,
-            chips: 1_000_000_000, // play-money sandbox — never written to disk
-            xp: 0,
-            level: 1,
-            language: "en",
-            lastBonusDate: null,
-            bonusStreak: 0,
-            lastTopUpAt: 0,
-            seasonPoints: 0,
-            tournamentsPlayed: 0,
-            achievements: [],
-            stats: {
-                hands: 0, showdowns: 0, showdownWins: 0, vpipHands: 0, pfrHands: 0,
-                biggestPot: 0, net: 0, netSamples: [], counters: {},
-            },
-            periods: {
-                daily: { key: "", net: 0, hands: 0, wins: 0, biggestPot: 0 },
-                weekly: { key: "", net: 0, hands: 0, wins: 0, biggestPot: 0 },
-                monthly: { key: "", net: 0, hands: 0, wins: 0, biggestPot: 0 },
-                yearly: { key: "", net: 0, hands: 0, wins: 0, biggestPot: 0 },
-            },
-            createdAt: Date.now(),
         };
     }
     makeTableConfig(index) {
-        const b = this.blinds;
         return {
             name: `${this.name} · T${index + 1}`,
             variant: this.cfg.variant,
             mode: "tournament",
             maxSeats: clamp(this.cfg.seatsPerTable, 2, MAX_SEATS_PER_TABLE),
-            smallBlind: b.sb,
-            bigBlind: b.bb,
-            ante: b.ante,
-            minBuyIn: this.cfg.startingStack,
-            maxBuyIn: this.cfg.startingStack,
-            startingStack: this.cfg.startingStack,
             actionTimerSec: this.cfg.turnSec,
             timeBankSec: 15,
-            straddle: false,
-            runItTwice: false,
-            rabbitHunt: true,
-            revealAllIn: true,
-            showLosingHand: true,
             approveJoin: false,
             // PRIVACY (hard rule): spectators never see hole cards (see registry.sanitizeConfig).
             spectatorCards: false,
             botDifficulty: "normal",
             botsYieldSeats: false, // room bots are real entrants — they never yield
-            entryFee: 0,
+            noPass: true, // tournaments always end in a showdown
         };
     }
 
@@ -584,7 +469,7 @@ export class Room {
             const first = buckets[i][0];
             if (!first)
                 continue;
-            const table = new PokerTable(code, cfg, this.tableDeps(code), sitOf(first.profile));
+            const table = new ShowdownTable(code, cfg, this.tableDeps(code), sitOf(first.profile));
             table.tournamentId = this.roomId;
             this.tables.push(table);
             this.hooks.registerTable(table, this.hostId);
@@ -638,7 +523,7 @@ export class Room {
         return {
             timers: realTimers(),
             random: () => randomBytes(4).readUInt32BE(0) / 4294967296,
-            sha256: (hex) => `sha256:${createHash("sha256").update(hex).digest("hex")}`,
+            sha256: () => "", // room tables publish the hash via events; no extra service needed
             broadcast: (ev) => {
                 this.hooks.broadcast(code, ev);
                 try {
@@ -656,11 +541,16 @@ export class Room {
                         this.eliminate(e, "forfeit");
                 }
             },
-            onPayout: () => { }, // prizes are paid once, at finish — not per hand
+            onPayout: () => { },
             onHandEnd: () => {
-                this.processBusts(code);
                 this.checkRebalance();
                 this.scheduleNextHandOnTable(code);
+            },
+            // 3 strikes = out of the tournament. Rank = how many were still in.
+            onStrike: ({ playerId }) => {
+                const e = this.entrants.get(playerId);
+                if (e && e.status === "active")
+                    this.eliminate(e, "strikes");
             },
         };
     }
@@ -676,60 +566,13 @@ export class Room {
             table.scheduleNextHand(NEXT_HAND_DELAY_MS);
     }
 
-    processBusts(code) {
-        if (this.status !== "active" && this.status !== "final_table")
-            return;
-        const table = this.tables.find((t) => t.code === code);
-        if (!table)
-            return;
-        const busted = [];
-        for (const seat of table.seats) {
-            if (!seat)
-                continue;
-            const pid = seat.playerId?.startsWith("leaving:") ? seat.playerId.slice(8) : seat.playerId;
-            if (!pid)
-                continue;
-            const e = this.entrants.get(pid);
-            if (!e || e.status !== "active")
-                continue;
-            if (seat.stack > 0) {
-                e.chipsAtLastHandStart = seat.stack + seat.committedThisHand;
-                continue;
-            }
-            const chipsAtHandStart = seat.stack + seat.committedThisHand;
-            busted.push({ e, tiebreak: chipsAtHandStart, seatId: seat.seatId });
-        }
-        if (busted.length === 0)
-            return;
-        busted.sort((a, b) => b.tiebreak - a.tiebreak || a.seatId - b.seatId);
-        for (const b of busted) {
-            const e = b.e;
-            const canRebuy = !e.isBot && e.rebuys < this.cfg.rebuys && this.levelIdx < this.cfg.rebuys + 1;
-            if (canRebuy) {
-                e.pendingRebuyUntil = Date.now() + REBUY_WINDOW_MS;
-                this.hooks.toastProfile(e.profile.token, {
-                    kind: "warn",
-                    i18n: { key: "toast.rebuy_offer", params: { fee: this.cfg.entryFee } },
-                });
-                realTimers().schedule(() => {
-                    const still = this.entrants.get(e.profile.token);
-                    if (still && still.pendingRebuyUntil && Date.now() >= still.pendingRebuyUntil && still.status === "active") {
-                        this.eliminate(still, "bust");
-                    }
-                }, REBUY_WINDOW_MS + 500);
-            }
-            else {
-                this.eliminate(e, "bust");
-            }
-        }
-    }
-
     eliminate(e, reason) {
         if (e.status !== "active")
-            return;         e.pendingRebuyUntil = null;
+            return;
         const activeBefore = [...this.entrants.values()].filter((x) => x.status === "active").length;
         e.status = "eliminated";
-        e.finalRank = Math.max(1, activeBefore);         e.bustAtLevel = this.levelIdx;
+        e.finalRank = Math.max(1, activeBefore);
+        e.reason = reason;
         this.log("player_eliminated", { name: e.profile.nickname, rank: e.finalRank, total: this.entrants.size });
         if (e.tableCode) {
             const table = this.tables.find((t) => t.code === e.tableCode);
@@ -760,36 +603,6 @@ export class Room {
         }
         this.checkRebalance();
         this.maybeFinish();
-    }
-    rebuy(token) {
-        const e = this.entrants.get(token);
-        if (!e || e.isBot)
-            return { ok: false, error: "no_rebuy" };
-        if (!e.pendingRebuyUntil || Date.now() > e.pendingRebuyUntil)
-            return { ok: false, error: "no_rebuy" };
-        if (e.rebuys >= this.cfg.rebuys)
-            return { ok: false, error: "no_rebuy" };
-        if (e.profile.chips < this.cfg.entryFee)
-            return { ok: false, error: "not_enough_chips" };
-        if (this.status !== "active" && this.status !== "final_table")
-            return { ok: false, error: "no_rebuy" };
-        e.profile.chips -= this.cfg.entryFee;
-        this.prizePool += this.cfg.entryFee;
-        e.rebuys += 1;
-        e.pendingRebuyUntil = null;
-        this.store.markDirty();
-        const table = this.tables.find((t) => t.code === e.tableCode);
-        const seat = table?.seatOf(token);
-        if (table && seat) {
-            seat.stack = this.cfg.startingStack;
-            seat.sittingOut = false;
-            seat.autoWait = false;
-            this.hooks.broadcastTableState(table.code);
-            this.scheduleNextHandOnTable(table.code);
-        }
-        this.hooks.toastProfile(token, { kind: "success", i18n: { key: "toast.rebuy_ok" } });
-        this.push();
-        return { ok: true };
     }
 
     checkRebalance() {
@@ -823,7 +636,7 @@ export class Room {
                     .filter((t) => !t.handActive)
                     .sort((a, b) => a.seatedPlayers().length - b.seatedPlayers().length)[0];
                 if (!breakable)
-                    break;                 const victim = this.lowestStackPlayer(breakable);
+                    break;                 const victim = this.lowestPointsPlayer(breakable);
                 if (!victim)
                     break;
                 const dest = this.smallestTableWithSpace(breakable.code);
@@ -843,7 +656,7 @@ export class Room {
                     break;                 const dest = this.smallestTableWithSpace(src.code);
                 if (!dest)
                     break;
-                const victim = this.lowestStackPlayer(src);
+                const victim = this.lowestPointsPlayer(src);
                 if (!victim)
                     break;
                 this.movePlayer(src, dest, victim);
@@ -861,7 +674,7 @@ export class Room {
             this.markDirty();
         }
     }
-    lowestStackPlayer(table) {
+    lowestPointsPlayer(table) {
         let pick = null;
         for (const s of table.seats) {
             if (!s)
@@ -869,8 +682,8 @@ export class Room {
             const pid = s.playerId;
             if (!pid || pid.startsWith("leaving:"))
                 continue;
-            if (!pick || s.stack < pick.stack || (s.stack === pick.stack && s.seatId < pick.seatId)) {
-                pick = { playerId: pid, nickname: s.nickname, avatar: s.avatar, stack: s.stack, seatId: s.seatId };
+            if (!pick || s.points < pick.points || (s.points === pick.points && s.seatId < pick.seatId)) {
+                pick = { playerId: pid, nickname: s.nickname, avatar: s.avatar, points: s.points, seatId: s.seatId };
             }
         }
         return pick;
@@ -890,14 +703,17 @@ export class Room {
         const ok = dest.sitDownFirstFree({ playerId: victim.playerId, nickname: victim.nickname, avatar: victim.avatar });
         if (!ok) {
             src.sitDownFirstFree({ playerId: victim.playerId, nickname: victim.nickname, avatar: victim.avatar });
-            const back = src.seatOf(victim.playerId);
-            if (back)
-                back.stack = victim.stack;
             return;
         }
+        // Carry the player's points and strikes across the table move so the
+        // tournament standings stay continuous.
         const seat = dest.seatOf(victim.playerId);
-        if (seat)
-            seat.stack = victim.stack;         const e = this.entrants.get(victim.playerId);
+        const oldSeat = src.seatOf(victim.playerId);
+        if (seat) {
+            seat.points = oldSeat?.points ?? 0;
+            seat.strikes = oldSeat?.strikes ?? 0;
+        }
+        const e = this.entrants.get(victim.playerId);
         if (e) {
             e.tableCode = dest.code;
             if (e.isBot) {
@@ -931,31 +747,12 @@ export class Room {
         this.tables = this.tables.filter((x) => x.code !== t.code);
         this.log("table_closed", { table: t.code });
     }
-    startLevel() {
-        if (this.status !== "active" && this.status !== "final_table")
-            return;
-        const b = this.blinds;
+    kickOffTables() {
         for (const t of this.tables) {
-            t.setBlinds(b);
-            t.setLevelInfo(this.levelIdx, Date.now() + this.cfg.levelSec * 1000);
-            this.hooks.chatSystem(t.code, `blind_level|${this.levelIdx + 1}|${b.sb}|${b.bb}|${b.ante}`);
             if (!t.handActive)
                 t.scheduleNextHand(1200);
             this.hooks.broadcastTableState(t.code);
         }
-        this.levelEndsAt = Date.now() + this.cfg.levelSec * 1000;
-        if (this.hLevel)
-            realTimers().cancel(this.hLevel);
-        this.hLevel = realTimers().schedule(() => {
-            if (this.status !== "active" && this.status !== "final_table")
-                return;
-            this.levelIdx += 1;
-            this.log("level_up", { level: this.levelIdx + 1, sb: b.sb, bb: b.bb });
-            this.checkRebalance();
-            this.startLevel();
-            this.push();
-        }, this.cfg.levelSec * 1000);
-        this.markDirty();
     }
     maybeFinish() {
         const active = [...this.entrants.values()].filter((e) => e.status === "active");
@@ -971,64 +768,38 @@ export class Room {
             winner.finalRank = 1;
         }
         else {
-            const lastBust = [...this.entrants.values()]
+            const lastStanding = [...this.entrants.values()]
                 .filter((e) => e.status === "eliminated")
-                .sort((a, b) => (b.bustAtLevel ?? 0) - (a.bustAtLevel ?? 0) || (b.chipsAtLastHandStart ?? 0) - (a.chipsAtLastHandStart ?? 0))[0];
-            if (lastBust) {
-                lastBust.status = "finished";
-                lastBust.finalRank = 1;
-                this.log("winner_promoted", { name: lastBust.profile.nickname });
+                .sort((a, b) => (b.finalRank ?? 0) - (a.finalRank ?? 0))[0];
+            if (lastStanding) {
+                lastStanding.status = "finished";
+                lastStanding.finalRank = 1;
+                this.log("winner_promoted", { name: lastStanding.profile.nickname });
             }
         }
         if (winner)
             this.log("winner", { name: winner.profile.nickname });
-        const percents = this.cfg.payoutPercents.length
-            ? this.cfg.payoutPercents
-            : this.entrants.size <= 4
-                ? [1]
-                : this.entrants.size <= 9
-                    ? [0.5, 0.3, 0.2]
-                    : [0.3, 0.2, 0.12, 0.08, 0.06, 0.06, 0.06, 0.06, 0.06];
         const paid = [...this.entrants.values()]
             .filter((e) => e.finalRank !== null)
             .sort((a, b) => (a.finalRank ?? 999) - (b.finalRank ?? 999));
-        for (let i = 0; i < paid.length; i++) {
-            const e = paid[i];
-            const pct = i < percents.length ? percents[i] : 0;
-            const prize = Math.floor(this.prizePool * pct);
-            e.prize = prize;
-            if (prize > 0 && !e.isBot)
-                e.profile.chips += prize;
-            const n = this.entrants.size;
+        const n = this.entrants.size;
+        for (const e of paid) {
             const pts = Math.round(10 * Math.sqrt(n) * ((n - (e.finalRank ?? n) + 1) / n));
             e.points = pts;
             if (!e.isBot) {
-                e.profile.seasonPoints += pts;
-                e.profile.tournamentsPlayed += 1;
-                if (e.finalRank === 1) {
-                    this.store.counter(e.profile, "wins", 1);
-                    this.store.addXp(e.profile, 200);
-                    if (n === 2)
-                        this.store.counter(e.profile, "huWins", 1);
-                }
-                else if ((e.finalRank ?? 99) <= 9 && n > 9) {
-                    this.store.counter(e.profile, "finalTables", 1);
-                    this.store.addXp(e.profile, 200);
-                }
-                this.store.addXp(e.profile, 100);
+                e.profile.seasonPoints = (e.profile.seasonPoints ?? 0) + pts;
+                this.store.addSeasonPoints(e.profile.id ?? e.profile.token, pts);
+                this.store.addXp(e.profile, e.finalRank === 1 ? 200 : 100);
+                if (e.finalRank === 1)
+                    this.store.counter(e.profile, "tourWins", 1);
                 this.store.checkAchievements(e.profile);
             }
         }
-        const distributed = paid.reduce((a, e) => a + e.prize, 0);
-        const leftover = Math.max(0, this.prizePool - distributed);
-        if (leftover > 0 && paid[0] && !paid[0].isBot)
-            paid[0].profile.chips += leftover;
         this.results = paid.map((e) => ({
             rank: e.finalRank ?? 0,
             nickname: e.profile.nickname,
             avatar: e.profile.avatar,
             isBot: e.isBot,
-            prize: e.prize,
             points: e.points,
             title: e.finalRank === 1 ? "champion" : e.finalRank === 2 ? "runner_up" : e.finalRank === 3 ? "third_place" : "eliminated",
         }));
@@ -1088,7 +859,6 @@ export class Room {
     }
 
     publicView(token) {
-        const b = this.blinds;
         const all = [...this.entrants.values()].sort((x, y) => x.joinedAt - y.joinedAt);
         const me = token ? this.entrants.get(token) ?? null : null;
         const isHost = !!token && token === this.hostId;
@@ -1099,13 +869,12 @@ export class Room {
             status: e.status,
             joinedAt: e.joinedAt,
             tableCode: e.tableCode ?? undefined,
-            stack: e.status === "active" ? this.stackOf(e.profile.token) : undefined,
+            points: e.status === "active" ? this.pointsOf(e.profile.token) : undefined,
             rank: e.finalRank,
-            rebuys: e.rebuys,
         }));
         const live = all
             .filter((e) => e.status === "active")
-            .sort((x, y) => this.stackOf(y.profile.token) - this.stackOf(x.profile.token));
+            .sort((x, y) => this.pointsOf(y.profile.token) - this.pointsOf(x.profile.token));
         const out = all
             .filter((e) => e.finalRank !== null)
             .sort((x, y) => (x.finalRank ?? 0) - (y.finalRank ?? 0));
@@ -1114,7 +883,7 @@ export class Room {
                 rank: i + 1,
                 nickname: e.profile.nickname,
                 avatar: e.profile.avatar,
-                stack: this.stackOf(e.profile.token),
+                points: this.pointsOf(e.profile.token),
                 out: false,
                 isBot: e.isBot,
                 tableCode: e.tableCode ?? undefined,
@@ -1123,7 +892,7 @@ export class Room {
                 rank: e.finalRank ?? 0,
                 nickname: e.profile.nickname,
                 avatar: e.profile.avatar,
-                stack: 0,
+                points: 0,
                 out: true,
                 isBot: e.isBot,
             })),
@@ -1148,19 +917,10 @@ export class Room {
             minPlayers: this.cfg.minPlayers,
             startsAt: this.cfg.startsAt,
             lateJoin: this.cfg.lateJoin,
-            entryFee: this.cfg.entryFee,
-            startingStack: this.cfg.startingStack,
-            levelSec: this.cfg.levelSec,
-            turbo: this.cfg.turbo,
-            rebuys: this.cfg.rebuys,
             turnSec: this.cfg.turnSec,
             seatsPerTable: this.cfg.seatsPerTable,
             maxPlayers: this.cfg.maxPlayers,
             unlimited: this.cfg.unlimited,
-            prizePool: this.prizePool,
-            payoutPercents: this.cfg.payoutPercents.length
-                ? this.cfg.payoutPercents
-                : total <= 4 ? [1] : total <= 9 ? [0.5, 0.3, 0.2] : [0.3, 0.2, 0.12, 0.08, 0.06, 0.06, 0.06, 0.06, 0.06],
             createdAt: this.createdAt,
             startedAt: this.startedAt,
             completedAt: this.completedAt,
@@ -1178,9 +938,6 @@ export class Room {
             winner: this.results.find((r) => r.rank === 1)
                 ? { nickname: this.results.find((r) => r.rank === 1).nickname, avatar: this.results.find((r) => r.rank === 1).avatar }
                 : null,
-            levelIdx: this.levelIdx,
-            levelEndsAt: this.levelEndsAt,
-            blinds: { sb: b.sb, bb: b.bb, ante: b.ante },
             events: this.events.slice(-120),
             counts: {
                 registered: total,
@@ -1191,15 +948,13 @@ export class Room {
             progress: total > 1 ? Math.max(0, Math.min(1, eliminated / (total - 1))) : 0,
             myStatus,
             myTableCode: me && (me.status === "active") ? me.tableCode ?? undefined : undefined,
-            canRebuy: !!me?.pendingRebuyUntil && Date.now() < me.pendingRebuyUntil,
-            rebuyFee: this.cfg.entryFee,
         };
     }
-    stackOf(token) {
+    pointsOf(token) {
         for (const t of this.tables) {
             const seat = t.seatOf(token);
             if (seat)
-                return seat.stack;
+                return seat.points;
         }
         return 0;
     }
@@ -1213,8 +968,6 @@ export class Room {
             createdAt: this.createdAt,
             startedAt: this.startedAt,
             completedAt: this.completedAt,
-            levelIdx: this.levelIdx,
-            prizePool: this.prizePool,
             events: this.events.slice(-EVENT_LOG_CAP),
             results: this.results,
             entrants: [...this.entrants.values()].map((e) => ({
@@ -1224,15 +977,10 @@ export class Room {
                 isBot: e.isBot,
                 botDifficulty: e.botDifficulty,
                 status: e.status,
-                rebuys: e.rebuys,
                 finalRank: e.finalRank,
                 points: e.points,
-                prize: e.prize,
-                kos: e.kos,
-                bustAtLevel: e.bustAtLevel,
                 joinedAt: e.joinedAt,
                 tableCode: e.tableCode,
-                chipsAtLastHandStart: e.chipsAtLastHandStart,
             })),
             tables: this.tables.map((t) => ({
                 code: t.code,
@@ -1242,7 +990,8 @@ export class Room {
                     token: s.playerId?.startsWith("leaving:") ? s.playerId.slice(8) : s.playerId,
                     nickname: s.nickname,
                     avatar: s.avatar,
-                    stack: s.stack + s.committedThisHand,
+                    points: s.points,
+                    strikes: s.strikes,
                     connected: s.connected,
                 })),
             })),
@@ -1256,8 +1005,6 @@ export class Room {
         room.createdAt = rec.createdAt;
         room.startedAt = rec.startedAt;
         room.completedAt = rec.completedAt;
-        room.levelIdx = rec.levelIdx ?? 0;
-        room.prizePool = rec.prizePool ?? 0;
         room.events = Array.isArray(rec.events) ? rec.events.slice(-EVENT_LOG_CAP) : [];
         room.results = Array.isArray(rec.results) ? rec.results : [];
         for (const r of rec.entrants ?? []) {
@@ -1266,23 +1013,19 @@ export class Room {
             const profile = r.isBot
                 ? room.makeBotProfile(r.token)
                 : store.getOrCreate(r.token, r.nickname);
-            if (!r.isBot && profile.nickname !== r.nickname)
+            if (!r.isBot && profile.nickname !== r.nickname) {
                 profile.nickname = r.nickname;
+                store.markDirty(profile);
+            }
             room.entrants.set(r.token, {
                 profile,
                 isBot: !!r.isBot,
                 botDifficulty: r.botDifficulty ?? "normal",
                 status: safeStatus,
-                rebuys: r.rebuys ?? 0,
                 finalRank: r.finalRank ?? null,
                 points: r.points ?? 0,
-                prize: r.prize ?? 0,
-                kos: r.kos ?? 0,
-                bustAtLevel: r.bustAtLevel ?? null,
-                pendingRebuyUntil: null,
                 joinedAt: r.joinedAt ?? Date.now(),
                 tableCode: r.tableCode ?? null,
-                chipsAtLastHandStart: r.chipsAtLastHandStart ?? rec.cfg.startingStack,
             });
         }
         if (room.status === "active" || room.status === "final_table" || room.status === "starting") {
@@ -1295,7 +1038,7 @@ export class Room {
                 const firstProfile = room.entrants.get(firstSeat.token)?.profile;
                 if (!firstProfile)
                     continue;
-                const table = new PokerTable(t.code, cfg, room.tableDeps(t.code), sitOf(firstProfile));
+                const table = new ShowdownTable(t.code, cfg, room.tableDeps(t.code), sitOf(firstProfile));
                 table.tournamentId = room.roomId;
                 room.tables.push(table);
                 hooks.registerTable(table, room.hostId);
@@ -1308,21 +1051,20 @@ export class Room {
                     const ok = table.sitDownFirstFree(sitOf(e.profile));
                     if (ok) {
                         const seat = table.seatOf(s.token);
-                        if (seat)
-                            seat.stack = Math.max(0, s.stack);
+                        if (seat) {
+                            seat.points = Math.max(0, s.points ?? 0);
+                            seat.strikes = Math.max(0, s.strikes ?? 0);
+                        }
                         e.status = "active";
                         e.tableCode = t.code;
                         if (e.isBot)
                             room.attachBotDriver(t.code, e);
                     }
                 }
-                table.setBlinds(room.blinds);
-                table.setLevelInfo(room.levelIdx, Date.now() + room.cfg.levelSec * 1000);
                 table.scheduleNextHand(2500);
             }
             if (room.tables.length > 0) {
                 room.log("recovered_after_restart", { tables: room.tables.length });
-                room.startLevel();
             }
         }
         if (room.status === "scheduled") {
@@ -1379,6 +1121,8 @@ export class RoomRunner {
         this.dataDir = dataDir;
         this.loadFromDisk();
         this.saveTimer = setInterval(() => this.flush(), 3000);
+        if (this.saveTimer.unref)
+            this.saveTimer.unref();
     }
 
     freshRoomId() {

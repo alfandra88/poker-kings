@@ -55,3 +55,6 @@ server.log
 # run.sh runtime state
 logs/
 .run/
+
+# server runtime state
+/.data/

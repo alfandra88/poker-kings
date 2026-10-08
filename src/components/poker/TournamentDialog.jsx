@@ -94,7 +94,7 @@ export function TournamentDialog({ open, onOpenChange }) {
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-white/50 tabular-nums">
           <span>{t("tour.registered", { n: rp.counts.registered, m: rp.maxPlayers })}</span>
           {runningish && <span>{t("room.remaining", { n: rp.counts.remaining })}</span>}
-          <span>{t("tour.prizePool")} {fmt(rp.prizePool, lang)}</span>
+          <span>{t("create.variant")}: {(rp.variant ?? "nlhe").toUpperCase()}</span>
           {rp.myStatus && rp.myStatus !== "spectator" && (<span className="text-[var(--brand)] font-bold">{t(`room.myStatus.${rp.myStatus}`, { defaultValue: rp.myStatus })}</span>)}
         </div>
       </button>);

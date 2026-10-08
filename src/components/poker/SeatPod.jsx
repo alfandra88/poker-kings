@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { compactFmt } from "@/lib/poker/i18n";
+import { compactFmt, translate } from "@/lib/poker/i18n";
 import { PlayingCard } from "./PlayingCard.jsx";
 const AVATAR_COLORS = [
     "#38bdf8", "#0db1ec", "#e5484d", "#4c8dff", "#9b59b6",
@@ -53,27 +53,21 @@ export function SeatPod({ seat, total, mySeatId, isToAct, msLeft, windowMs: winM
     const frac = isToAct && ms > 0 ? Math.max(0, Math.min(1, ms / totalWin)) : 0;
     const timerColor = frac > 0.5 ? "var(--brand)" : frac > 0.2 ? "var(--gold)" : "var(--danger)";
     const urgent = isToAct && secs <= 5 && ms > 0;
-    const betLabel = seat.bet > 0 ? compactFmt(seat.bet, lang) : null;
-    const skipped = seat.lastActionBy === "time" && (seat.lastAction === "check" || seat.lastAction === "fold");
+    const pointsLabel = compactFmt(seat.points ?? 0, lang);
+    const strikeMarks = Math.min(3, seat.strikes ?? 0);
     const avatarBg = AVATAR_COLORS[(seat.seatId + (seat.nickname.length || 1)) % AVATAR_COLORS.length];
     const podScale = Math.max(0.35, Math.min(1.15, scale || 1));
     const R = 21;     const CIRC = 2 * Math.PI * R;
     const pillBelow = pos.y < cyPct;
-    const pillOff = Math.round((podScale < 0.9 ? 14 : 18) * podScale + 4);
     return (<div className="absolute z-10" style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: `translate(-50%,-50%) scale(${podScale})` }} data-seat={seat.seatId} data-testid={`seat-${seat.seatId}`}>
-      {/* bet chips toward center */}
-      {betLabel && (<div className="absolute left-1/2 -translate-x-1/2 z-20 whitespace-nowrap anim-chip" style={pillBelow ? { bottom: `${-pillOff}px` } : { top: `${-pillOff}px` }}>
-          <div className="flex items-center gap-1 rounded-full bg-black/65 border border-[var(--gold)]/30 px-2 py-0.5 shadow-[0_2px_10px_rgba(0,0,0,0.45)]">
-            <span className="chip-dot"/>
-            <span className="chip-gold-text text-[11px] font-semibold tabular-nums">{betLabel}</span>
-          </div>
+      {seat.benched && !seat.sittingOut && (<div className="absolute inset-0 rounded-2xl bg-black/60 z-10 flex flex-col items-center justify-center px-1">
+          <span className="text-[9px] font-bold tracking-wider text-[var(--gold)] text-center">{translate(lang, "seat.benched", { n: seat.benchRounds ?? 0 })}</span>
         </div>)}
-
-      {seat.folded && !seat.sittingOut && (<div className="absolute inset-0 rounded-2xl bg-black/55 z-10 flex items-center justify-center">
-          <span className="text-[10px] font-bold tracking-widest text-white/70">FOLD</span>
-        </div>)}
-      {seat.sittingOut && (<div className="absolute inset-0 rounded-2xl bg-black/60 z-10 flex items-center justify-center px-1">
+      {seat.sittingOut && !seat.benched && (<div className="absolute inset-0 rounded-2xl bg-black/60 z-10 flex items-center justify-center px-1">
           <span className="text-[9px] font-bold tracking-wider text-white/70 text-center">SIT OUT</span>
+        </div>)}
+      {seat.passed && !seat.sittingOut && !seat.benched && (<div className="absolute inset-0 rounded-2xl bg-black/55 z-10 flex items-center justify-center">
+          <span className="text-[10px] font-bold tracking-widest text-white/70">PASS</span>
         </div>)}
 
       <div className={`glass-strong rounded-2xl px-2 py-1.5 flex flex-col items-center gap-1 w-[118px] overflow-hidden transition-all duration-200 ${isToAct ? "seat-active" : ""} ${seat.revealed ? "seat-revealed" : ""}`} style={isToAct ? { "--timer-color": timerColor } : undefined}>
@@ -107,20 +101,23 @@ export function SeatPod({ seat, total, mySeatId, isToAct, msLeft, windowMs: winM
               {isSelf && <span className="text-[8px] bg-white/15 rounded px-1 py-px uppercase">You</span>}
               {seat.nickname}
             </div>
-            <div className="text-[12px] font-bold text-gradient-gold tabular-nums leading-tight">
-              {compactFmt(seat.stack, lang)}
+            <div className="flex items-center gap-1 leading-tight">
+              <span className="text-[12px] font-bold text-gradient-gold tabular-nums">
+                {pointsLabel}
+              </span>
+              {strikeMarks > 0 && (<span className="text-[9px] font-bold text-[var(--danger)] tabular-nums" title={translate(lang, "table.strikes", { n: strikeMarks })} data-testid={`strikes-${seat.seatId}`}>
+                  {"●".repeat(strikeMarks)}
+                </span>)}
             </div>
           </div>
         </div>
 
         {seat.cards && seat.cards.length > 0 && (<div className="flex gap-0.5 mt-0.5">
-            {seat.revealed || isSelf ? (seat.cards.map((c, i) => (<PlayingCard key={i} card={c} size="sm" delay={i * 60} highlight={seat.revealed && isToAct === false && seat.lastAction !== "fold"}/>))) : (seat.cards.map((_, i) => <PlayingCard key={i} faceDown size="sm" delay={i * 60}/>))}
+            {seat.revealed || isSelf ? (seat.cards.map((c, i) => (<PlayingCard key={i} card={c} size="sm" delay={i * 60} highlight={seat.revealed}/>))) : (seat.cards.map((_, i) => <PlayingCard key={i} faceDown size="sm" delay={i * 60}/>))}
           </div>)}
 
-        {seat.lastAction && seat.lastAction !== "sb" && seat.lastAction !== "bb" && !betLabel && (<div className={`-mt-0.5 text-[9px] uppercase tracking-wider rounded-full px-1.5 py-px font-bold ${skipped
-                ? "text-[var(--danger)] bg-[rgba(240,82,92,0.12)] border border-[rgba(240,82,92,0.4)]"
-                : "text-white/50"}`} data-testid={skipped ? "skip-badge" : undefined} title={skipped ? "No action in time — skipped" : undefined}>
-            {skipped ? `⏱ ${seat.lastAction}` : seat.lastAction}
+        {seat.lastAction && !seat.passed && (<div className="-mt-0.5 text-[9px] uppercase tracking-wider rounded-full px-1.5 py-px font-bold text-white/50">
+            {seat.lastAction}
           </div>)}
       </div>
     </div>);
