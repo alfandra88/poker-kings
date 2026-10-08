@@ -15,11 +15,12 @@
       else if (k.indexOf('on') === 0) el.addEventListener(k.slice(2), attrs[k]);
       else if (attrs[k] !== false && attrs[k] != null) el.setAttribute(k, attrs[k] === true ? '' : attrs[k]);
     });
-    for (var i = 2; i < arguments.length; i++) {
-      var c = arguments[i];
-      if (c == null || c === false) continue;
-      el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    function add(c) {
+      if (c == null || c === false) return;
+      if (Array.isArray(c)) c.forEach(add);
+      else el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
     }
+    for (var i = 2; i < arguments.length; i++) add(arguments[i]);
     return el;
   }
 
