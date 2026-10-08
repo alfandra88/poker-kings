@@ -201,7 +201,7 @@ export function RoomPanel({ roomId, standalone = false }) {
                 </button>)}
             </div>
           </div>
-          <p className="mt-2 text-[10.5px] text-white/40 leading-relaxed">{startModeLabel} — {startModeDesc}</p>
+          <p className="mt-2 text-[10.5px] text-white/40 leading-relaxed">{startModeLabel} · {startModeDesc}</p>
           {room.status === "scheduled" && countdown !== null && (<div className="mt-3 rounded-xl bg-black/35 border border-white/10 px-4 py-3 text-center" data-testid="room-countdown">
               <p className="text-[10px] uppercase tracking-[0.16em] text-white/45 font-bold">{t("room.countdown")}</p>
               <p className="text-2xl sm:text-3xl font-black tabular-nums text-gradient-gold">{formatRemaining(countdown)}</p>
@@ -213,8 +213,8 @@ export function RoomPanel({ roomId, standalone = false }) {
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" data-testid="room-facts">
           <Fact label={t("common.players")} value={`${room.counts.registered}/${room.unlimited ? "∞" : room.maxPlayers}`} testid="fact-players"/>
           <Fact label={t("room.tables")} value={room.status === "completed" || cancelled ? "—" : String(room.counts.tables)}/>
-          <Fact label={t("tour.entry")} value={room.entryFee > 0 ? fmt(room.entryFee, lang) : t("room.free")}/>
-          <Fact label={t("tour.prizePool")} value={fmt(room.prizePool, lang)} testid="fact-prize"/>
+          <Fact label={t("create.variant")} value={(room.variant ?? "nlhe").toUpperCase()}/>
+          <Fact label={t("create.timer")} value={`${room.turnSec}s`}/>
         </section>
 
         {/* ───────── CANCELLED ───────── */}
@@ -261,8 +261,7 @@ export function RoomPanel({ roomId, standalone = false }) {
                     <span className="text-[14px] shrink-0" aria-hidden>{r.rank === 1 ? "🥇" : r.rank === 2 ? "🥈" : r.rank === 3 ? "🥉" : "•"}</span>
                     <span className={`flex-1 min-w-0 truncate text-[13.5px] font-bold ${r.rank === 1 ? "text-gradient-gold" : ""}`}>{r.nickname}{r.isBot ? " 🤖" : ""}</span>
                     <span className="text-[10.5px] text-white/45 shrink-0 hidden sm:block">{t(`room.title.${r.title}`)}</span>
-                    {r.prize > 0 && <span className="text-[12px] font-bold text-gradient-gold tabular-nums shrink-0">+{fmt(r.prize, lang)}</span>}
-                    {r.points > 0 && <span className="text-[10.5px] text-white/40 tabular-nums shrink-0 w-12 text-right">{r.points} pts</span>}
+                    {r.points > 0 && <span className="text-[12px] font-bold text-gradient-gold tabular-nums shrink-0">+{fmt(r.points, lang)} {t("common.points")}</span>}
                   </div>))}
               </div>
             </div>
@@ -284,15 +283,12 @@ export function RoomPanel({ roomId, standalone = false }) {
                 </p>)}
               {room.startMode === "scheduled" && (<p className="text-[12.5px] text-white/65">{t("room.scheduledInfo")}</p>)}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-                <MiniFact label={t("tour.stack")} value={fmt(room.startingStack, lang)}/>
+                <MiniFact label={t("create.variant")} value={(room.variant ?? "nlhe").toUpperCase()}/>
                 <MiniFact label={t("create2.seatsPerTable")} value={String(room.seatsPerTable)}/>
                 <MiniFact label={t("create.timer")} value={`${room.turnSec}s`}/>
-                <MiniFact label={t("tour.levelSec")} value={`${Math.round(room.levelSec / 60)}m${room.turbo ? " ⚡" : ""}`}/>
+                <MiniFact label={t("create2.lateJoin")} value={room.lateJoin ? "✓" : "✕"}/>
               </div>
-              <p className="text-[11px] text-white/45">
-                {room.lateJoin ? `✓ ${t("room.lateJoinOn")}` : `✕ ${t("room.lateJoinOff")}`}
-                {room.rebuys > 0 ? ` · ${t("tour.rebuys")}: ${room.rebuys}` : ""}
-              </p>
+              <p className="text-[11px] text-white/45">{t("create.stayRule")}</p>
             </div>
 
             {/* registered players */}
@@ -355,9 +351,8 @@ export function RoomPanel({ roomId, standalone = false }) {
                 <div className="h-full rounded-full bg-gradient-to-r from-[var(--brand)] to-[var(--gold)] transition-all duration-500" style={{ width: `${Math.round(room.progress * 100)}%` }}/>
               </div>
               <div className="flex items-center gap-3 flex-wrap text-[11.5px] text-white/55">
-                <span>{t("room.level", { n: room.levelIdx + 1 })}</span>
-                <span className="font-bold text-white/80 tabular-nums">{room.blinds.sb}/{room.blinds.bb}{room.blinds.ante > 0 ? ` (A ${room.blinds.ante})` : ""}</span>
-                {room.levelEndsAt && <LevelClock endsAt={room.levelEndsAt}/>}
+                <span>{t("create.variant")}: {(room.variant ?? "nlhe").toUpperCase()}</span>
+                <span className="font-bold text-white/80 tabular-nums">{t("create.timer")}: {room.turnSec}s</span>
               </div>
             </div>
 
@@ -370,14 +365,6 @@ export function RoomPanel({ roomId, standalone = false }) {
                     : room.myStatus === "registered"
                         ? t("room.notSeatedYet")
                         : t("room.spectatorHint")}
-              </div>)}
-
-            {/* rebuy banner */}
-            {room.canRebuy && (<div className="rounded-2xl border border-[var(--danger)]/40 bg-[rgba(255,90,90,0.08)] p-3.5 flex items-center gap-3">
-                <div className="flex-1 text-[13px] font-semibold text-[var(--danger)]">{t("toast.rebuy_offer", { fee: room.rebuyFee ?? 0 })}</div>
-                <button className="rounded-xl bg-[var(--gold)] text-black text-[12px] font-black px-4 py-2 disabled:opacity-50" disabled={busy} onClick={() => act("room:rebuy", { roomId })} data-testid="btn-room-rebuy">
-                  {t("tour.rebuyBtn", { fee: fmt(room.rebuyFee ?? 0, lang) })}
-                </button>
               </div>)}
 
             {/* tables grid */}
@@ -409,7 +396,7 @@ export function RoomPanel({ roomId, standalone = false }) {
             <div className="modern-card overflow-hidden">
               <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between">
                 <p className="font-black text-[13px]">{t("tour.standings")}</p>
-                <p className="text-[11px] text-white/45 tabular-nums">{t("tour.prizePool")}: {fmt(room.prizePool, lang)}</p>
+                <p className="text-[11px] text-white/45 tabular-nums">{t("common.points")}</p>
               </div>
               <div className="max-h-[46dvh] overflow-y-auto overscroll-contain divide-y divide-white/5">
                 {room.standings.map((s) => (<div key={`${s.rank}-${s.nickname}`} className={`flex items-center gap-2.5 px-4 py-2 ${s.out ? "opacity-45" : ""}`}>
@@ -421,7 +408,7 @@ export function RoomPanel({ roomId, standalone = false }) {
                     </span>
                     {s.tableCode && !s.out && <span className="text-[10px] font-mono text-white/35 shrink-0">{s.tableCode}</span>}
                     <span className={`text-[12px] font-bold tabular-nums shrink-0 ${s.out ? "text-white/35" : "text-gradient-gold"}`}>
-                      {s.out ? "💀" : fmt(s.stack, lang)}
+                      {s.out ? "💀" : fmt(s.points, lang)}
                     </span>
                   </div>))}
               </div>
@@ -460,18 +447,6 @@ function MiniFact({ label, value }) {
       <p className="text-[9px] uppercase tracking-wide text-white/40 font-bold truncate">{label}</p>
       <p className="text-[12.5px] font-black tabular-nums">{value}</p>
     </div>);
-}
-
-function LevelClock({ endsAt }) {
-    const [, tick] = useState(0);
-    useEffect(() => {
-        const id = setInterval(() => tick((x) => x + 1), 1000);
-        return () => clearInterval(id);
-    }, []);
-    const left = Math.max(0, endsAt - Date.now());
-    const m = Math.floor(left / 60000);
-    const s = Math.floor((left % 60000) / 1000);
-    return <span className="tabular-nums text-white/70 font-bold">⏱ {m}:{String(s).padStart(2, "0")}</span>;
 }
 
 function langMetaLocale(lang) {

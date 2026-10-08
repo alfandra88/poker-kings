@@ -4,7 +4,6 @@ import { create } from "zustand";
 import { io } from "socket.io-client";
 import { translate, applyLangToDocument, detectLang, isLang } from "./i18n/index.js";
 const TOKEN_KEY = "pokerkings.token";
-const NICK_KEY = "pokerkings.nick";
 const LANG_KEY = "pokerkings.lang";
 const THEME_KEY = "pokerkings.theme";
 
@@ -55,10 +54,15 @@ function scheduleAutoSit(get, code) {
                 return;
             const snap = get().snap;
             if (snap?.seats.some((s) => s?.self))
-                return;             const res = await get().emit("seat:auto");
+                return;
+            const res = await get().emit("seat:auto");
             if (res?.ok)
                 return;
             const err = res?.error ?? "generic";
+            if (err === "account_required") {
+                get().toast("error", get().t("error.account_required"));
+                return;
+            }
             if ((err === "bot_making_room" || err === "seat_taken" || err === "table_full") && triesLeft > 0) {
                 fire(2200 + (4 - triesLeft) * 1600, triesLeft - 1);
                 return;
@@ -75,31 +79,35 @@ export function setPendingJoinCode(code) {
 export function setPendingRoomId(id) {
     pendingRoomId = id;
 }
-export function getToken() {
+/**
+ * The Homeroom shell injects the RS256 iframe token as ?token= on load. It is
+ * kept in sessionStorage (per tab, cleared when the shell reloads the frame)
+ * and forwarded on the socket handshake. Offline loads carry no token, which
+ * is fine: the socket falls back to a read-only guest session.
+ */
+export function captureIframeToken() {
     if (typeof window === "undefined")
         return null;
     try {
-        return localStorage.getItem(TOKEN_KEY);
+        const url = new URL(window.location.href);
+        const tok = url.searchParams.get("token");
+        if (tok) {
+            sessionStorage.setItem(TOKEN_KEY, tok);
+            url.searchParams.delete("token");
+            window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+            return tok;
+        }
+        return sessionStorage.getItem(TOKEN_KEY);
     }
     catch (err) {
-        console.debug("[poker] localStorage.getItem(token) unavailable:", err);
+        console.debug("[poker] token storage unavailable:", err);
         return null;
-    }
-}
-function getNickname() {
-    if (typeof window === "undefined")
-        return "";
-    try {
-        return localStorage.getItem(NICK_KEY) ?? "";
-    }
-    catch (err) {
-        console.debug("[poker] localStorage.getItem(nick) unavailable:", err);
-        return "";
     }
 }
 export const usePoker = create((set, get) => ({
     connected: false,
     authed: false,
+    guest: false,
     me: null,
     lang: "en",
     soundOn: true,
@@ -109,18 +117,13 @@ export const usePoker = create((set, get) => ({
     snap: null,
     chat: [],
     log: [],
-    ledger: [],
-    rabbit: null,
     room: null,
     roomList: [],
-    tournament: null,
-    tournamentList: [],
     profile: null,
     leaderboard: null,
     toasts: [],
     drawerTab: "chat",
     drawerOpen: false,
-    raisePanelOpen: false,
     joinRequest: null,
     set: (partial) => set(partial),
     setLang: (l) => {
@@ -132,8 +135,8 @@ export const usePoker = create((set, get) => ({
         catch {
             // storage unavailable (private mode) — keep in-memory language only
         }
-        applyLangToDocument(l);         set({ lang: l });
-        socket?.emit("auth", { token: getToken(), nickname: getNickname(), language: l });
+        applyLangToDocument(l);
+        set({ lang: l });
     },
     setSound: (on) => set({ soundOn: on }),
     setTheme: (t) => {
@@ -165,43 +168,38 @@ export const usePoker = create((set, get) => ({
     connect: () => {
         if (socket)
             return;
-        socket = io("/?XTransformPort=44447", {
+        const token = captureIframeToken();
+        socket = io("/", {
             transports: ["websocket", "polling"],
             reconnection: true,
             reconnectionAttempts: 20,
             reconnectionDelay: 1000,
             timeout: 10000,
+            auth: token ? { token } : {},
         });
         const s = socket;
         s.on("connect", () => {
             set({ connected: true });
-            const token = getToken() ?? undefined;
-            s.emit("auth", { token, nickname: getNickname() || undefined, language: get().lang }, (res) => {
-                if (res?.ok && res.token) {
-                    try {
-                        localStorage.setItem(TOKEN_KEY, res.token);
-                    }
-                    catch (err) {
-                        console.debug("[poker] localStorage.setItem(token) unavailable:", err);
-                    }
-                    set({ authed: true, me: res.me ?? null });
-                    if (pendingRoomId && isRoomIdShape(pendingRoomId)) {
-                        const rid = pendingRoomId.toLowerCase();
-                        pendingRoomId = null;
-                        void get().openRoom(rid);
-                    }
-                    if (pendingJoinCode) {
-                        const code = pendingJoinCode;
-                        pendingJoinCode = null;
-                        void get().joinTable(code);
-                    }
-                }
-            });
+            if (pendingRoomId && isRoomIdShape(pendingRoomId)) {
+                const rid = pendingRoomId.toLowerCase();
+                pendingRoomId = null;
+                void get().openRoom(rid);
+            }
+            if (pendingJoinCode) {
+                const code = pendingJoinCode;
+                pendingJoinCode = null;
+                void get().joinTable(code);
+            }
         });
         s.on("disconnect", () => set({ connected: false }));
         s.on("me", (me) => {
+            if (!me || me.guest) {
+                // Signed-out visitor: read-only guest session.
+                set({ guest: true, authed: false, me: null });
+                return;
+            }
             const prev = get().me;
-            set({ me });
+            set({ guest: false, authed: true, me });
             if (prev && me.level > prev.level) {
                 get().toast("success", get().t("toast.levelup", { level: me.level }));
             }
@@ -211,33 +209,20 @@ export const usePoker = create((set, get) => ({
                 set({ snap: null, view: "home", tableCode: null });
                 return;
             }
-            set({ snap, view: "table", tableCode: snap.code, rabbit: null });
+            set({ snap, view: "table", tableCode: snap.code });
         });
         s.on("event", (ev) => {
-            if (ev?.t === "rabbit" && ev.kind === "reveal") {
-                set({ rabbit: { stage: String(ev.stage), cards: ev.cards ?? [] } });
-                return;
-            }
             set((st) => ({ log: [...st.log.slice(-250), ev] }));
-            if (ev?.t === "note" && typeof ev.text === "string" && ev.text.startsWith("blind_level|")) {
-                const [, , sb, bb] = ev.text.split("|");
-                get().toast("info", get().t("toast.level_up", { sb, bb }));
-            }
-            if (ev?.t === "payout" && Array.isArray(ev.winners)) {
-                const me = get().me;
+            if (ev?.t === "showdown" && Array.isArray(ev.winners)) {
                 const snap = get().snap;
-                if (me && snap) {
-                    const mySeat = snap.seats.find((x) => x?.self);
-                    const won = ev.winners.find((w) => mySeat && w.seat === mySeat.seatId);
-                    if (won && won.amount >= (snap.config?.bigBlind ?? 1) * 20) {
-                        playSound("win", get().soundOn);
-                    }
+                const mySeat = snap?.seats.find((x) => x?.self);
+                if (mySeat && ev.winners.some((w) => w.seat === mySeat.seatId)) {
+                    playSound("win", get().soundOn);
                 }
             }
         });
         s.on("chat:history", ({ messages }) => set({ chat: messages }));
         s.on("chat:message", (msg) => set((st) => ({ chat: [...st.chat.slice(-200), msg] })));
-        s.on("ledger", ({ rows }) => set({ ledger: rows }));
         s.on("log", ({ events }) => set({ log: events }));
         s.on("leaderboard", (data) => set({ leaderboard: data }));
         s.on("toast", (toast) => {
@@ -250,26 +235,6 @@ export const usePoker = create((set, get) => ({
             get().toast("warn", get().t("toast.superseded"));
             set({ snap: null, view: "home", tableCode: null });
         });
-        s.on("tournament:state", (ts) => {
-            set((st) => {
-                const cur = st.tournament;
-                const merged = cur && cur.id === ts.id
-                    ? {
-                        ...ts,
-                        myTableCode: ts.myTableCode ?? cur.myTableCode,
-                        myStatus: ts.myStatus ?? cur.myStatus,
-                        canRebuy: ts.canRebuy ?? cur.canRebuy,
-                    }
-                    : ts;
-                return {
-                    tournament: merged,
-                    tournamentList: st.tournamentList.some((x) => x.id === merged.id)
-                        ? st.tournamentList.map((x) => (x.id === merged.id ? merged : x))
-                        : [merged, ...st.tournamentList],
-                };
-            });
-        });
-        s.on("tournament:list", (list) => set({ tournamentList: list }));
         s.on("room:state", (rp) => {
             if (!rp || typeof rp.roomId !== "string")
                 return;
@@ -294,35 +259,19 @@ export const usePoker = create((set, get) => ({
     },
     ensureAuthed: async () => {
         get().connect();
-        if (get().authed)
+        if (get().connected && (get().authed || get().guest))
             return;
         await new Promise((resolve) => {
-            const check = () => (get().authed ? resolve() : setTimeout(check, 120));
+            const check = () => (get().connected && (get().authed || get().guest) ? resolve() : setTimeout(check, 120));
             check();
         });
-    },
-    setNickname: async (nick) => {
-        const safe = String(nick ?? "").trim();
-        if (!safe) {
-            get().toast("error", get().t("error.generic"));
-            return;
-        }
-        try {
-            localStorage.setItem(NICK_KEY, safe);
-        }
-        catch (err) {
-            console.debug("[poker] localStorage.setItem(nick) unavailable:", err);
-        }
-        const res = await get().emit("auth", { token: getToken(), nickname: safe, language: get().lang });
-        if (res?.ok)
-            set({ me: res.me });
     },
     createTable: async (cfg) => {
         await get().ensureAuthed();
         const res = await get().emit("table:create", { config: cfg });
         if (res?.ok && res.code) {
             const code = res.code;
-            set({ view: "table", tableCode: code, snap: null, chat: [], log: [], ledger: [], rabbit: null });
+            set({ view: "table", tableCode: code, snap: null, chat: [], log: [] });
             try {
                 window.history.replaceState(null, "", `/?t=${code}`);
             }
@@ -340,14 +289,16 @@ export const usePoker = create((set, get) => ({
         await get().ensureAuthed();
         const res = await get().emit("table:join", { code: norm, password });
         if (res?.ok) {
-            set({ view: "table", tableCode: norm, snap: null, chat: [], log: [], ledger: [], rabbit: null, drawerOpen: false });
+            set({ view: "table", tableCode: norm, snap: null, chat: [], log: [], drawerOpen: false });
             try {
                 window.history.replaceState(null, "", `/?t=${norm}`);
             }
             catch (err) {
                 console.debug("[poker] history.replaceState unavailable after joinTable:", err);
             }
-            scheduleAutoSit(get, norm);
+            // Guests watch from the rail; only accounts auto-take a seat.
+            if (!get().guest)
+                scheduleAutoSit(get, norm);
             for (const delay of [1200, 3000, 6000, 10000]) {
                 setTimeout(() => {
                     if (get().view === "table" && get().tableCode === norm && !get().snap) {
@@ -368,7 +319,7 @@ export const usePoker = create((set, get) => ({
     },
     leaveTable: async () => {
         await get().emit("table:leave");
-        set({ view: "home", snap: null, tableCode: null, chat: [], log: [], ledger: [], rabbit: null, drawerOpen: false });
+        set({ view: "home", snap: null, tableCode: null, chat: [], log: [], drawerOpen: false });
         try {
             window.history.replaceState(null, "", "/");
         }
@@ -392,6 +343,10 @@ export const usePoker = create((set, get) => ({
         const err = res?.error ?? "generic";
         if (err === "room_not_found") {
             get().toast("error", get().t("error.room_not_found"));
+            return false;
+        }
+        if (err === "account_required") {
+            handleFail(get, res);
             return false;
         }
         const pub = await get().emit("room:public", { roomId: norm });
@@ -418,7 +373,8 @@ export const usePoker = create((set, get) => ({
     openRoomTable: async (roomId) => {
         const res = await get().emit("room:openTable", { roomId });
         if (res?.ok && typeof res.tableCode === "string") {
-            set({ view: "home" });             return get().joinTable(res.tableCode);
+            set({ view: "home" });
+            return get().joinTable(res.tableCode);
         }
         handleFail(get, res);
         return false;
@@ -426,6 +382,10 @@ export const usePoker = create((set, get) => ({
 
     quickPlay: async (opts) => {
         await get().ensureAuthed();
+        if (get().guest) {
+            get().toast("error", get().t("error.account_required"));
+            return false;
+        }
         const me = get().me;
         const bots = Math.max(1, Math.min(8, opts?.bots ?? 5));
         const difficulty = opts?.difficulty ?? "normal";
@@ -434,14 +394,8 @@ export const usePoker = create((set, get) => ({
             variant: "nlhe",
             mode: "cash",
             maxSeats: 9,
-            smallBlind: 10,
-            bigBlind: 20,
-            minBuyIn: 1000,
-            maxBuyIn: 5000,
             actionTimerSec: 15,
             timeBankSec: 0,
-            runItTwice: true,
-            rabbitHunt: true,
             spectatorCards: false, // PRIVACY: spectators never see hole cards
             botCount: bots,
             botDifficulty: difficulty,
@@ -453,13 +407,12 @@ function handleFail(get, res) {
     const err = res?.error ?? "generic";
     const map = {
         table_not_found: "error.table_not_found",
-        not_enough_chips: "error.not_enough_chips",
+        account_required: "error.account_required",
+        pass_not_allowed: "error.pass_not_allowed",
         wait_approval: "error.wait_approval",
         wrong_password: "error.wrong_password",
         banned: "error.banned",
         not_your_turn: "error.not_your_turn",
-        raise_too_small: "error.raise_too_small",
-        buy_in_too_low: "error.buy_in_too_low",
         rate_limited: "error.rate_limited",
         muted: "error.muted",
         blocked: "error.blocked",
@@ -489,7 +442,8 @@ export function playSound(kind, on) {
         audioCtx = audioCtx ?? new (window.AudioContext ?? window.webkitAudioContext)();
         const ctx = audioCtx;
         if (ctx.state === "suspended")
-            return;         const now = ctx.currentTime;
+            return;
+        const now = ctx.currentTime;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain);

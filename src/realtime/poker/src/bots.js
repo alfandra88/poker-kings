@@ -1,4 +1,4 @@
-import { botThinkMs, decideBotAction, pickBotStyle, } from "../../../src/lib/poker-engine/bots.js";
+import { botThinkMs, decideBotStay, pickBotStyle, } from "../../../lib/poker-engine/bots.js";
 const BOT_NAMES = [
     "AceHunter", "RiverRat", "SlowrollSam", "Bluffy", "ChipLdrStealer", "AllInAnnie",
     "TightTed", "ManiacMo", "SneakyPete", "LuckyLucy", "GunDan", "OmahaOtto",
@@ -35,7 +35,7 @@ export class BotHost {
 
     addBots(code, count, difficulty) {
         const entry = this.resolve(code);
-        if (!entry || entry.table.cfg.mode !== "cash")
+        if (!entry)
             return [];
         const table = entry.table;
         const metas = this.meta.get(code) ?? new Map();
@@ -57,10 +57,7 @@ export class BotHost {
                 style: pickBotStyle(Math.random),
                 joinedHandNo: table.handNo,
             };
-            const bb = Math.max(1, table.cfg.bigBlind);
-            const max = table.cfg.maxBuyIn > 0 ? table.cfg.maxBuyIn : Infinity;
-            const buyIn = Math.max(table.cfg.minBuyIn, Math.min(bb * 100, max));
-            const res = table.sitDown(free, { playerId: handle.playerId, nickname: name, avatar: `av${Math.floor(Math.random() * 8)}` }, buyIn);
+            const res = table.sitDown(free, { playerId: handle.playerId, nickname: name, avatar: `av${Math.floor(Math.random() * 8)}` }, 0);
             if (!res.ok)
                 continue;
             const seat = table.seatOf(handle.playerId);
@@ -141,7 +138,7 @@ export class BotHost {
             const seat = entry.table.seatOf(pid);
             if (!seat)
                 continue;
-            const rank = seat.cards.length === 0 || seat.sittingOut ? 4 : seat.folded ? 3 : seat.allIn ? 2 : 1;
+            const rank = seat.cards.length === 0 || seat.sittingOut || seat.benched ? 4 : seat.passed ? 3 : 1;
             const score = rank * 10000 - m.joinedHandNo;
             if (score > pickRank) {
                 pickRank = score;
@@ -154,9 +151,6 @@ export class BotHost {
     notifyEvent(code, ev) {
         if (!this.meta.has(code))
             return;
-        if (ev.t === "hand_end" || ev.t === "payout") {
-            setTimeout(() => this.topUpBots(code), 120);
-        }
         this.schedulePump(code, 50);
     }
     schedulePump(code, ms) {
@@ -181,14 +175,6 @@ export class BotHost {
         const snap = entry.table.snapshotFor({ playerId: "__driver__", isSpectator: true });
         const timers = this.timers.get(code) ?? new Map();
         this.timers.set(code, timers);
-        if (snap.ritPrompt) {
-            for (const pid of metas.keys()) {
-                const seat = entry.table.seatOf(pid);
-                if (seat && !seat.folded && !seat.allIn && !(seat.seatId in snap.ritPrompt.votes)) {
-                    entry.table.voteRit(pid, true);
-                }
-            }
-        }
         const toAct = snap.toAct !== null ? snap.seats[snap.toAct] : null;
         if (!toAct?.playerId)
             return;
@@ -217,79 +203,20 @@ export class BotHost {
         if (!seat)
             return;
         const snap = table.snapshotFor({ playerId: pid, isSpectator: false });
-        if (snap.ritPrompt) {
-            table.voteRit(pid, true);
-            this.schedulePump(code, 200);
-            return;
-        }
         if (snap.toAct !== seat.seatId)
             return;
         const persona = { difficulty: handle.difficulty, style: handle.style };
-        let decision = decideBotAction(snap, seat.seatId, persona, Math.random);
+        let decision = decideBotStay(snap, seat.seatId, persona, Math.random);
         if (!decision) {
-            decision = snap.canCheck ? { type: "check" } : { type: "fold" };
+            decision = { type: "stay" };
         }
-        const fallback = () => {
-            if (snap.canCheck)
-                table.act(pid, "check");
-            else if (snap.toCall > 0 && seat.stack > 0)
-                table.act(pid, "call");
-            else if (snap.canCheck)
-                table.act(pid, "check");
-            else
-                table.act(pid, "fold");
-        };
         try {
-            if (decision.type === "bet" || decision.type === "raise") {
-                const minTo = snap.minRaiseTo;
-                const maxTo = snap.maxRaiseTo;
-                if (minTo == null || maxTo == null) {
-                    fallback();
-                    return;
-                }
-                let to = Math.round(decision.to ?? minTo);
-                to = Math.max(minTo, Math.min(maxTo, to));
-                const res = table.act(pid, "raise", to);
-                if (!res.ok)
-                    fallback();
-            }
-            else {
-                const res = table.act(pid, decision.type);
-                if (!res.ok)
-                    fallback();
-            }
+            const res = table.act(pid, decision.type);
+            if (!res.ok)
+                table.act(pid, "stay");
         }
         catch {
-            try {
-                fallback();
-            }
-            catch {
-                // engine invariant: never crashes the service
-            }
-        }
-    }
-
-    topUpBots(code) {
-        const entry = this.resolve(code);
-        const metas = this.meta.get(code);
-        if (!entry || !metas)
-            return;
-        const table = entry.table;
-        if (table.handActive || table.cfg.mode !== "cash")
-            return;
-        const bb = Math.max(1, table.cfg.bigBlind);
-        for (const pid of metas.keys()) {
-            const seat = table.seatOf(pid);
-            if (!seat)
-                continue;
-            const floor = bb * 45;
-            if (seat.stack >= floor)
-                continue;
-            const max = table.cfg.maxBuyIn > 0 ? table.cfg.maxBuyIn : Infinity;
-            const target = Math.max(table.cfg.minBuyIn, Math.min(bb * 100, max));
-            const add = target - seat.stack;
-            if (add > 0)
-                table.addChips(pid, add);
+            // engine invariant: never crashes the service
         }
     }
     clearTableTimers(code) {

@@ -1,7 +1,7 @@
 {
-  "name": "Poker Kings — Free Poker with Friends",
+  "name": "Poker Kings: Stay or Pass",
   "short_name": "Poker Kings",
-  "description": "Free online poker with friends. No ads, no deposits, play money only.",
+  "description": "Free stay-or-pass card showdowns with friends. Points only, never money.",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",

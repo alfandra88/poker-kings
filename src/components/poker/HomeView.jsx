@@ -64,9 +64,9 @@ export function HomeView() {
               <span className="w-7 h-7 rounded-full bg-gradient-to-br from-[#4bcfff] to-[var(--brand-deep)] text-[#02151c] text-[11px] font-black flex items-center justify-center shadow-[0_2px_8px_rgba(39, 190, 245, 0.35)] shrink-0">
                 {me.nickname.slice(0, 2).toUpperCase()}
               </span>
-              {/* R11 — chips truncate and the level tag hides ≤380px so the
+              {/* R11 — points truncate and the level tag hides ≤380px so the
                 header can never overflow a 360px viewport */}
-              <span className="text-[12px] font-bold text-gradient-gold tabular-nums max-w-[56px] sm:max-w-none truncate">{fmt(me.chips, lang)}</span>
+              <span className="text-[12px] font-bold text-gradient-gold tabular-nums max-w-[56px] sm:max-w-none truncate">{fmt(me.seasonPoints ?? 0, lang)}</span>
               <span className="text-[10px] text-white/50 hidden min-[380px]:inline">Lv{me.level}</span>
             </button>)}
           <button className="btn-ghost rounded-xl px-2.5 py-1.5 flex items-center gap-1.5 text-[11px] font-bold shrink-0 min-h-9" onClick={() => setLangOpen(true)} aria-label={t("common.language")} data-testid="btn-language">
@@ -204,29 +204,18 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
 
     const [customMax, setCustomMax] = useState("");
     const [seatsPerTable, setSeatsPerTable] = useState(8);
-    const [stack, setStack] = useState(10000);
-
-    const [customStack, setCustomStack] = useState("");
-    const [entryFee, setEntryFee] = useState(0);
     const [turnSec, setTurnSec] = useState(15);
-    const [levelMin, setLevelMin] = useState(5);
-    const [turbo, setTurbo] = useState(true);
-    const [rebuys, setRebuys] = useState(0);
     const [lateJoin, setLateJoin] = useState(false);
     const [startMode, setStartMode] = useState("immediate");
     const [requiredPlayers, setRequiredPlayers] = useState(16);
     const [minPlayers, setMinPlayers] = useState(8);
     const [startAtLocal, setStartAtLocal] = useState("");
     const [fallback, setFallback] = useState("keep_waiting");
-    const [bb, setBb] = useState(20);
     const [seats, setSeats] = useState(9);
     const [bots, setBots] = useState(3);
     const [botDiff, setBotDiff] = useState("normal");
     const [timer, setTimer] = useState(15);
     const [timeBank, setTimeBank] = useState(0);
-    const [straddle, setStraddle] = useState(false);
-    const [rit, setRit] = useState(true);
-    const [rabbit, setRabbit] = useState(true);
     const [approve, setApprove] = useState(false);
     const [password, setPassword] = useState("");
     const [advanced, setAdvanced] = useState(false);
@@ -251,13 +240,6 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
         return Math.max(2, Math.min(200, parsed));
     };
 
-    const effectiveStack = () => {
-        const parsed = Number.parseInt(customStack, 10);
-        if (!Number.isFinite(parsed))
-            return stack;
-        return Math.max(500, Math.min(10_000_000, parsed));
-    };
-
     const computeStartsAt = () => {
         if (!startAtLocal)
             return null;
@@ -279,11 +261,6 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
                 maxPlayers: effMax,
                 unlimited,
                 seatsPerTable,
-                startingStack: effectiveStack(),
-                entryFee,
-                levelSec: levelMin * 60,
-                turbo,
-                rebuys,
                 turnSec,
                 lateJoin,
                 startMode,
@@ -317,18 +294,11 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
                 variant,
                 mode: "cash",
                 maxSeats: seats,
-                smallBlind: Math.max(1, Math.round(bb / 2)),
-                bigBlind: bb,
-                minBuyIn: bb * 50,
-                maxBuyIn: bb * 250,
                 actionTimerSec: timer,
                 timeBankSec: timeBank,
-                straddle,
-                runItTwice: rit,
-                rabbitHunt: rabbit,
                 approveJoin: approve,
                 password: password || undefined,
-                spectatorCards: true,
+                spectatorCards: false, // PRIVACY: spectators never see hole cards
                 botCount: bots,
                 botDifficulty: botDiff,
                 botsYieldSeats: true,
@@ -411,42 +381,12 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
                   {unlimited && (<p className="text-[9.5px] text-white/40 mt-1" data-testid="unlimited-hint">{t("create2.unlimitedHint")}</p>)}
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <Label className="text-white/70 text-[12px]">{t("tour.stack")}</Label>
-                  <div className="flex gap-1 mt-1">
-                    {[3000, 10000, 30000].map((v) => (<button key={v} className={`flex-1 rounded-lg py-2 text-[10.5px] font-bold transition-all ${stack === v && customStack === "" ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => { setCustomStack(""); setStack(v); }}>
-                        {v >= 1000 ? `${v / 1000}k` : v}
-                      </button>))}
-                  </div>
-                  {/* custom starting chips — the creator decides (500..10M, server re-clamps) */}
-                  <div className="flex items-center gap-1.5 mt-1.5">
-                    <span className="text-[9.5px] text-white/40 shrink-0">{t("create2.custom")}</span>
-                    <input type="number" inputMode="numeric" min={500} max={10000000} step={100} value={customStack} placeholder={String(stack)} onChange={(e) => {
-                const v = e.target.value;
-                if (!/^\d{0,8}$/.test(v))
-                    return;                 setCustomStack(v);
-                const parsed = Number.parseInt(v, 10);
-                if (Number.isFinite(parsed) && parsed >= 500)
-                    setStack(parsed);
-            }} className="min-w-0 flex-1 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-[11px] font-bold text-white/85 placeholder:text-white/25 outline-none focus:border-[var(--brand)]/50" data-testid="stack-custom"/>
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-white/70 text-[12px]">{t("tour.entry")}</Label>
-                  <div className="flex gap-1 mt-1">
-                    {[0, 1000, 5000].map((v) => (<button key={v} className={`flex-1 rounded-lg py-2 text-[10.5px] font-bold transition-all ${entryFee === v ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setEntryFee(v)}>
-                        {v === 0 ? "FREE" : `${v / 1000}k`}
-                      </button>))}
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-white/70 text-[12px]">{t("create2.seatsPerTable")}</Label>
-                  <div className="flex gap-1 mt-1">
-                    {[2, 6, 8].map((v) => (<button key={v} className={`flex-1 rounded-lg py-2 text-[10.5px] font-bold transition-all ${seatsPerTable === v ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setSeatsPerTable(v)} data-testid={`spt-${v}`}>
-                        {v === 2 ? "HU" : v}
-                      </button>))}
-                  </div>
+              <div>
+                <Label className="text-white/70 text-[12px]">{t("create2.seatsPerTable")}</Label>
+                <div className="flex gap-1 mt-1">
+                  {[2, 6, 8].map((v) => (<button key={v} className={`flex-1 rounded-lg py-2 text-[10.5px] font-bold transition-all ${seatsPerTable === v ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setSeatsPerTable(v)} data-testid={`spt-${v}`}>
+                      {v === 2 ? "HU" : v}
+                    </button>))}
                 </div>
               </div>
 
@@ -461,18 +401,7 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
                   </div>
                 </div>
                 <p className="text-[10.5px] text-white/45 leading-relaxed">{t("create.timerHint")}</p>
-                <div className="flex items-center justify-between pt-1">
-                  <Label className="text-white/75 text-[12px]">{t("tour.levelSec")}: {levelMin}m ⚡</Label>
-                  <Switch checked={turbo} onCheckedChange={setTurbo}/>
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-white/75 text-[12px]">{t("tour.rebuys")}</Label>
-                  <div className="flex gap-1">
-                    {[0, 1, 2].map((v) => (<button key={v} className={`rounded-lg px-2.5 py-1 text-[10.5px] font-bold transition-all ${rebuys === v ? "seg-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setRebuys(v)}>
-                        {v === 0 ? t("common.off") : v}
-                      </button>))}
-                  </div>
-                </div>
+                <p className="text-[10.5px] text-white/45 leading-relaxed">{t("create.stayRule")}</p>
                 <div className="flex items-center justify-between">
                   <Label className="text-white/75 text-[12px]">{t("create2.lateJoin")}</Label>
                   <Switch checked={lateJoin} onCheckedChange={setLateJoin} data-testid="switch-latejoin"/>
@@ -516,10 +445,10 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
             </>) : (<>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label className="text-white/70 text-[12px]">{t("create.blinds")}</Label>
+                  <Label className="text-white/70 text-[12px]">{t("create.variant")}</Label>
                   <div className="flex gap-1.5 mt-1">
-                    {[10, 20, 50, 100].map((v) => (<button key={v} className={`flex-1 rounded-xl py-2 text-[11px] font-bold transition-all ${bb === v ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setBb(v)}>
-                        {v / 2}/{v}
+                    {["nlhe", "plo4"].map((v) => (<button key={v} className={`flex-1 rounded-xl py-2 text-[11px] font-bold transition-all ${variant === v ? "seg-gold-on" : "btn-ghost !bg-white/5 text-white/60"}`} onClick={() => setVariant(v)}>
+                        {v === "nlhe" ? "Hold'em" : "Omaha PLO4"}
                       </button>))}
                   </div>
                 </div>
@@ -575,18 +504,6 @@ function CreateDialog({ open, onOpenChange, onCreating, defaultNick, }) {
                 {t("create.options")} {advanced ? "−" : "+"}
               </button>
               {advanced && (<div className="space-y-2.5 rounded-2xl bg-black/30 p-3">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-white/75 text-[12px]">{t("create.rit")}</Label>
-                    <Switch checked={rit} onCheckedChange={setRit}/>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label className="text-white/75 text-[12px]">{t("create.rabbit")}</Label>
-                    <Switch checked={rabbit} onCheckedChange={setRabbit}/>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label className="text-white/75 text-[12px]">{t("create.straddle")}</Label>
-                    <Switch checked={straddle} onCheckedChange={setStraddle}/>
-                  </div>
                   <div className="flex items-center justify-between">
                     <Label className="text-white/75 text-[12px]">{t("create.approve")}</Label>
                     <Switch checked={approve} onCheckedChange={setApprove}/>

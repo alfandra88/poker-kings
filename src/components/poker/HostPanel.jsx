@@ -16,8 +16,6 @@ export function HostPanel({ open, onOpenChange }) {
     const setSound = usePoker((s) => s.setSound);
     const lang = usePoker((s) => s.lang);
     const setLang = usePoker((s) => s.setLang);
-    const [sb, setSb] = useState(0);
-    const [bb, setBb] = useState(0);
     const [timer, setTimer] = useState(0);
     const [password, setPassword] = useState("");
     if (!snap)
@@ -57,16 +55,6 @@ export function HostPanel({ open, onOpenChange }) {
             {isHost && (<section className="space-y-2.5 border-t border-white/10 pt-3">
                 <div className="text-[10px] uppercase tracking-widest text-white/40">{t("host.settings")}</div>
 
-                {snap.mode === "cash" && (<div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label className="text-white/60 text-[11px]">SB</Label>
-                      <Input type="number" defaultValue={snap.config.smallBlind} onBlur={(e) => setSb(parseInt(e.target.value || "0", 10))} className="bg-black/40 border-white/15 text-white"/>
-                    </div>
-                    <div>
-                      <Label className="text-white/60 text-[11px]">BB</Label>
-                      <Input type="number" defaultValue={snap.config.bigBlind} onBlur={(e) => setBb(parseInt(e.target.value || "0", 10))} className="bg-black/40 border-white/15 text-white"/>
-                    </div>
-                  </div>)}
                 <div>
                   <Label className="text-white/60 text-[11px]">{t("create.timer")} (5–120s)</Label>
                   <Input type="number" defaultValue={snap.config.actionTimerSec} onBlur={(e) => setTimer(parseInt(e.target.value || "0", 10))} className="bg-black/40 border-white/15 text-white"/>
@@ -77,10 +65,6 @@ export function HostPanel({ open, onOpenChange }) {
                 </div>
                 <button className="w-full rounded-xl bg-[var(--brand)] text-black font-black py-2 text-[12px]" onClick={async () => {
                 const patch = {};
-                if (sb > 0 && bb > 0) {
-                    patch.smallBlind = sb;
-                    patch.bigBlind = bb;
-                }
                 if (timer >= 5 && timer <= 120)
                     patch.actionTimerSec = timer;
                 if (password !== (snap.config.password ?? ""))
@@ -97,22 +81,6 @@ export function HostPanel({ open, onOpenChange }) {
                 <div className="flex items-center justify-between">
                   <Label className="text-white/85 text-[13px]">{t("create.approve")}</Label>
                   <Switch checked={snap.config.approveJoin} onCheckedChange={(v) => emit("host:config", { patch: { approveJoin: v } })}/>
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-white/85 text-[13px]">{t("create.spectatorCards")}</Label>
-                  <Switch checked={snap.config.spectatorCards} onCheckedChange={(v) => emit("host:config", { patch: { spectatorCards: v } })}/>
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-white/85 text-[13px]">{t("create.rit")}</Label>
-                  <Switch checked={snap.config.runItTwice} onCheckedChange={(v) => emit("host:config", { patch: { runItTwice: v } })}/>
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-white/85 text-[13px]">{t("create.rabbit")}</Label>
-                  <Switch checked={snap.config.rabbitHunt} onCheckedChange={(v) => emit("host:config", { patch: { rabbitHunt: v } })}/>
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-white/85 text-[13px]">{t("create.straddle")}</Label>
-                  <Switch checked={snap.config.straddle} onCheckedChange={(v) => emit("host:config", { patch: { straddle: v } })}/>
                 </div>
               </section>)}
 
@@ -141,7 +109,7 @@ export function HostPanel({ open, onOpenChange }) {
                       {p.isBot && (<span className="text-[8px] bg-[var(--brand)]/25 text-[var(--brand)] rounded px-1 py-px font-black uppercase shrink-0">AI</span>)}
                       {p.nickname}
                     </span>
-                    <span className="text-[11px] text-[var(--gold)] tabular-nums">{fmt(p.stack, lang)}</span>
+                    <span className="text-[11px] text-[var(--gold)] tabular-nums">{fmt(p.points ?? 0, lang)}</span>
                     {p.isBot ? (<button className="text-[10px] rounded-lg bg-[var(--danger)]/70 hover:bg-[var(--danger)] text-white px-2 py-1" onClick={() => emit("host:removeBot", { playerId: p.playerId })} data-testid={`remove-bot-${p.seatId}`}>
                         {t("host.removeBot")}
                       </button>) : !p.self && (<>

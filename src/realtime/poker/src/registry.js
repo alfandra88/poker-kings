@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { PokerTable } from "../../../src/lib/poker-engine/table.js";
+import { ShowdownTable } from "../../../lib/poker-engine/showdown.js";
 import { ACHIEVEMENTS } from "./state.js";
 import { filterMessage } from "./chat.js";
 import { BotHost } from "./bots.js";
@@ -25,6 +25,8 @@ export class TableRegistry {
         this.store = store;
         this.bots = new BotHost((code) => this.tables.get(code), (code, text) => this.systemChat(code, text));
         this.stateTimer = setInterval(() => this.flushDirty(), 60);
+        if (this.stateTimer.unref)
+            this.stateTimer.unref();
     }
     dispose() {
         if (this.stateTimer)
@@ -32,11 +34,11 @@ export class TableRegistry {
         for (const code of this.tables.keys())
             this.bots.disposeTable(code);
     }
-    createTable(profile, patch, botCount = 0) {
-        const code = genCode();
+    createTable(profile, patch, botCount = 0, fixedCode = null) {
+        const code = fixedCode && /^[A-Z0-9]{4,10}$/.test(fixedCode) ? fixedCode : genCode();
         const cfg = sanitizeConfig(patch, profile);
         const deps = this.makeDeps(code);
-        const table = new PokerTable(code, cfg, deps, sit(profile));
+        const table = new ShowdownTable(code, cfg, deps, sit(profile));
         const extras = {
             createdAt: Date.now(),
             chat: [],
@@ -44,14 +46,13 @@ export class TableRegistry {
             banned: new Set(),
             pending: new Map(),
             joinReq: new Map(),
-            ledger: new Map(),
             hostId: profile.token,
             eventLog: [],
         };
         this.tables.set(code, { table, extras });
         this.store.counter(profile, "gamesHosted", 1);
         this.store.checkAchievements(profile);
-        if (botCount > 0 && cfg.mode === "cash") {
+        if (botCount > 0) {
             this.bots.addBots(code, Math.min(botCount, cfg.maxSeats - 1), cfg.botDifficulty ?? "normal");
         }
         this.markDirty(code);
@@ -69,7 +70,6 @@ export class TableRegistry {
             banned: new Set(),
             pending: new Map(),
             joinReq: new Map(),
-            ledger: new Map(),
             hostId,
             eventLog: [],
         };
@@ -86,14 +86,6 @@ export class TableRegistry {
             return;
         entry.table.close();
         entry.table.abortHand();
-        for (const p of entry.table.seatedPlayers()) {
-            if (p.playerId.startsWith("bot:") || this.bots.isBot(code, p.playerId))
-                continue;
-            const prof = this.store.getOrCreate(p.playerId);
-            prof.chips += p.stack;
-            this.ledgerAdd(entry, p.playerId, "buy_out", p.stack, "table closed");
-        }
-        this.store.markDirty();
         this.io.to(`table:${code}`).emit("toast", { kind: "info", i18n: { key: "toast.table_closed" } });
         for (const [, s] of this.io.sockets.sockets) {
             if (s.rooms.has(`table:${code}`))
@@ -109,7 +101,6 @@ export class TableRegistry {
                 code: table.code,
                 name: table.cfg.name,
                 variant: table.cfg.variant,
-                blinds: `${table.cfg.smallBlind}/${table.cfg.bigBlind}`,
                 seats: table.seats.length,
                 seated,
                 mode: table.cfg.mode,
@@ -138,18 +129,7 @@ export class TableRegistry {
                 this.bots.notifyEvent(code, ev);
             },
             onStateDirty: () => this.markDirty(code),
-            onPlayersLeft: (players) => {
-                const entry = this.tables.get(code);
-                if (!entry)
-                    return;
-                for (const p of players) {
-                    if (entry.table.cfg.mode === "cash") {
-                        const prof = this.store.getOrCreate(p.playerId);
-                        prof.chips += p.stack;
-                        this.store.markDirty();
-                        this.ledgerAdd(entry, p.playerId, "buy_out", p.stack);
-                    }
-                }
+            onPlayersLeft: () => {
                 this.pushMeToRoom(code);
                 this.markDirty(code);
             },
@@ -157,32 +137,12 @@ export class TableRegistry {
                 const entry = this.tables.get(code);
                 if (!entry)
                     return;
-                const bb = entry.table.cfg.bigBlind || 1;
-                for (const e of info.entries) {
-                    if (e.delta <= 0 || !e.label || this.bots.isBot(code, e.playerId))
-                        continue;
-                    const prof = this.store.getOrCreate(e.playerId);
-                    this.store.counter(prof, "wins", 1);
-                    this.store.addXp(prof, 50);
-                    const key = e.label?.key;
-                    if (key === "flush")
-                        this.store.counter(prof, "flushWins", 1);
-                    if (key === "full_house")
-                        this.store.counter(prof, "boatWins", 1);
-                    if (key === "quads" || key === "straight_flush")
-                        this.store.counter(prof, "quadsWins", 1);
-                    if (e.delta >= bb * 100)
-                        this.store.counter(prof, "bigPots", 1);
-                    if (e.delta > prof.stats.biggestPot)
-                        prof.stats.biggestPot = e.delta;
-                    this.store.checkAchievements(prof);
-                }
                 if (info.nets) {
                     for (const n of info.nets) {
-                        if (this.bots.isBot(code, n.playerId))
+                        if (isBotId(n.playerId) || this.bots.isBot(code, n.playerId))
                             continue;
                         const prof = this.store.getOrCreate(n.playerId);
-                        this.store.recordHandResult(prof, { net: n.net, won: n.won });
+                        this.store.recordHandResult(prof, { won: n.won });
                     }
                 }
             },
@@ -191,12 +151,19 @@ export class TableRegistry {
                 if (!entry)
                     return;
                 for (const p of entry.table.seatedPlayers()) {
-                    if (this.bots.isBot(code, p.playerId))
+                    if (isBotId(p.playerId) || this.bots.isBot(code, p.playerId))
                         continue;
                     const prof = this.store.getOrCreate(p.playerId);
                     this.store.addXp(prof, 10);
-                    prof.stats.hands += 1;
                 }
+            },
+            // Tournament elimination (3 strikes): the room layer removes the
+            // player, assigns the final rank and rebalances tables.
+            onStrike: (info) => {
+                const entry = this.tables.get(code);
+                if (!entry)
+                    return;
+                entry.extras.onStrike?.(info);
             },
         };
     }
@@ -205,78 +172,32 @@ export class TableRegistry {
         const entry = this.tables.get(code);
         if (!entry)
             return;
+        const humanAt = (seatId) => {
+            const seat = entry.table.seats[seatId ?? -1];
+            const pid = seat?.playerId;
+            if (!pid || pid.startsWith("leaving:") || isBotId(pid) || this.bots.isBot(code, pid))
+                return null;
+            return this.store.getOrCreate(pid);
+        };
         if (ev.t === "reveal") {
-            const seat = entry.table.seats[ev.seat ?? -1];
-            const pid = seat?.playerId;
-            if (pid && !pid.startsWith("leaving:") && !pid.startsWith("bot:")) {
-                const prof = this.store.getOrCreate(pid);
-                prof.stats.showdowns += 1;
+            const prof = humanAt(ev.seat);
+            if (prof)
+                prof.showdowns += 1, this.store.markDirty(prof);
+        }
+        if (ev.t === "showdown" && Array.isArray(ev.winners)) {
+            for (const w of ev.winners) {
+                const prof = humanAt(w.seat);
+                if (!prof)
+                    continue;
+                this.store.counter(prof, "hand_win", 1);
+                const key = w.label?.key;
+                if (key === "flush" || key === "full_house" || key === "quads" || key === "straight_flush") {
+                    this.store.counter(prof, `hand_${key}`, 1);
+                }
+                this.store.addXp(prof, 50);
+                this.store.checkAchievements(prof);
             }
         }
-        if (ev.t === "action" && ev.kind === "call" && (ev.amount ?? 0) > 0) {
-            const seat = entry.table.seats[ev.seat ?? -1];
-            const pid = seat?.playerId;
-            if (pid && !pid.startsWith("leaving:") && !pid.startsWith("bot:")) {
-                const prof = this.store.getOrCreate(pid);
-                prof.stats.vpipHands += 1;
-            }
-        }
-        if (ev.t === "action" && ev.kind === "raise") {
-            const seat = entry.table.seats[ev.seat ?? -1];
-            const pid = seat?.playerId;
-            if (pid && !pid.startsWith("leaving:") && !pid.startsWith("bot:")) {
-                const prof = this.store.getOrCreate(pid);
-                prof.stats.pfrHands += 1;
-            }
-        }
-    }
-    ledgerAdd(entry, playerId, kind, amount, note) {
-        let row = entry.extras.ledger.get(playerId);
-        if (!row) {
-            row = { buyIn: 0, buyOut: 0, movements: [] };
-            entry.extras.ledger.set(playerId, row);
-        }
-        if (kind === "buy_in")
-            row.buyIn += amount;
-        if (kind === "buy_out")
-            row.buyOut += amount;
-        row.movements.push({ ts: Date.now(), kind, amount, note });
-    }
-    ledgerRows(code) {
-        const entry = this.tables.get(code);
-        if (!entry)
-            return [];
-        const rows = [];
-        for (const [playerId, row] of entry.extras.ledger) {
-            if (playerId.startsWith("bot:") || this.bots.isBot(code, playerId))
-                continue;
-            const seat = entry.table.seatOf(playerId);
-            const stack = seat?.stack ?? 0;
-            rows.push({
-                // PRIVACY — clients get the opaque seat uid, never the bearer token
-                playerId: seat?.seatUid ?? `x${rows.length}`,
-                nickname: seat?.nickname ?? this.store.getOrCreate(playerId).nickname,
-                buyIn: row.buyIn,
-                buyOut: row.buyOut,
-                stack,
-                net: row.buyOut + stack - row.buyIn,
-                movements: row.movements,
-            });
-        }
-        for (const seat of entry.table.seats) {
-            if (seat && seat.playerId && !seat.playerId.startsWith("leaving:") &&
-                !seat.playerId.startsWith("bot:") && !this.bots.isBot(code, seat.playerId) &&
-                !entry.extras.ledger.has(seat.playerId)) {
-                rows.push({
-                    playerId: seat.seatUid, // PRIVACY — opaque seat uid, never the token
-                    nickname: seat.nickname,
-                    buyIn: 0, buyOut: 0, stack: seat.stack,
-                    net: seat.stack,
-                    movements: [],
-                });
-            }
-        }
-        return rows;
     }
     markDirty(code) {
         this.dirtyTables.add(code);
@@ -305,7 +226,6 @@ export class TableRegistry {
             const snap = entry.table.snapshotFor({ playerId: profile.token, isSpectator: !seated });
             snap.spectators = Math.max(0, room.size - seatedCount(entry));
             sock.emit("state", snap);
-            sock.emit("ledger", { rows: this.ledgerRows(code) });
         }
     }
     pushMeToRoom(code) {
@@ -428,15 +348,7 @@ export class TableRegistry {
             this.markDirty(code);
             return true;
         }
-        const seat = entry.table.seatOf(targetId);
-        const stack = seat?.stack ?? 0;
         entry.table.removePlayer(targetId);
-        if (stack > 0 && entry.table.cfg.mode === "cash") {
-            const prof = this.store.getOrCreate(targetId);
-            prof.chips += stack;
-            this.store.markDirty();
-            this.ledgerAdd(entry, targetId, "buy_out", stack, "kicked");
-        }
         const prof2 = this.store.getOrCreate(targetId);
         this.io.to(`table:${code}`).emit("toast", {
             kind: "warn",
@@ -493,6 +405,9 @@ export class TableRegistry {
         return true;
     }
 }
+function isBotId(pid) {
+    return typeof pid === "string" && pid.startsWith("bot:");
+}
 function sit(profile) {
     return { playerId: profile.token, nickname: profile.nickname, avatar: profile.avatar };
 }
@@ -501,36 +416,21 @@ function seatedCount(entry) {
 }
 export function sanitizeConfig(patch, profile) {
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v || 0)));
-    const variant = patch.variant === "plo4" ? "plo4" : "nlhe";
-    const bb = clamp(patch.bigBlind ?? 20, 2, 100000);
-    const sb = clamp(patch.smallBlind ?? Math.round(bb / 2), 1, bb);
-    const mode = patch.mode === "tournament" ? "tournament" : "cash";
     const cfg = {
         name: (patch.name || `${profile.nickname}'s Table`).slice(0, 40),
-        variant,
-        mode,
+        variant: patch.variant === "plo4" ? "plo4" : "nlhe",
+        mode: patch.mode === "tournament" ? "tournament" : "cash",
         maxSeats: clamp(patch.maxSeats ?? 9, 2, 10),
-        smallBlind: sb,
-        bigBlind: bb,
-        ante: clamp(patch.ante ?? 0, 0, bb),
-        minBuyIn: clamp(patch.minBuyIn ?? bb * 50, bb * 10, 10_000_000),
-        maxBuyIn: clamp(patch.maxBuyIn ?? bb * 250, 0, 10_000_000),
-        startingStack: clamp(patch.startingStack ?? 10000, bb * 20, 10_000_000),
         actionTimerSec: clamp(patch.actionTimerSec ?? 15, 5, 120),
         timeBankSec: clamp(patch.timeBankSec ?? 0, 0, 300),
-        straddle: !!patch.straddle,
-        runItTwice: !!patch.runItTwice,
-        rabbitHunt: patch.rabbitHunt !== false,
-        revealAllIn: patch.revealAllIn !== false,
-        showLosingHand: patch.showLosingHand !== false,
         approveJoin: !!patch.approveJoin,
         // PRIVACY (hard rule): hole cards are private — spectators must NEVER see
         // them. Any client-supplied value is ignored; the only reveal paths are
-        // self, showdown `reveal` events and all-in runouts (game rules).
+        // self and showdown `reveal` events (game rules).
         spectatorCards: false,
         botDifficulty: patch.botDifficulty === "hard" ? "hard" : patch.botDifficulty === "easy" ? "easy" : "normal",
         botsYieldSeats: patch.botsYieldSeats !== false,
-        entryFee: 0,
+        noPass: false,
     };
     const pw = typeof patch.password === "string" ? patch.password.trim().slice(0, 12) : "";
     if (pw)

@@ -1,0 +1,29 @@
+{
+  "name": "Poker Kings",
+  "description": "Free stay-or-pass card showdowns with friends. Points only, never money.",
+  "secrets": [],
+  "tests": [
+    {
+      "id": "home.opens",
+      "name": "Home screen opens",
+      "path": "/",
+      "expectSelector": "[data-testid='btn-quick-play']",
+      "expectText": "Start a new game"
+    },
+    {
+      "id": "table.demo",
+      "name": "Demo table renders a live showdown table",
+      "path": "/?t=DEMO01",
+      "expectSelector": "[data-testid='felt']",
+      "expectText": "Staging demo table",
+      "visual": true,
+      "impact": [
+        "src/components/poker/**",
+        "src/lib/poker/**",
+        "src/realtime/poker/**",
+        "src/lib/poker-engine/**",
+        "server.js"
+      ]
+    }
+  ]
+}
