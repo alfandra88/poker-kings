@@ -4,6 +4,8 @@ const SIZES = {
     sm: { w: 30, h: 42, rank: "text-[13px]", suit: "text-[11px]" },
     md: { w: 44, h: 62, rank: "text-[18px]", suit: "text-[14px]" },
     lg: { w: 58, h: 82, rank: "text-[24px]", suit: "text-[18px]" },
+    // Fills a Poker Squares grid cell; the cell sets the size.
+    grid: { w: "100%", h: "100%", rank: "sq-rank", suit: "sq-suit" },
 };
 export function PlayingCard({ card, faceDown = false, size = "md", highlight = false, dim = false, delay = 0, animate = true, }) {
     const s = SIZES[size];

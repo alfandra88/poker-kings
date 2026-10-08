@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { usePoker, loadLangFromStorage } from "@/lib/poker/store";
+import { ThemeToggle } from "@/components/poker/ThemeToggle";
 import { RoomPanel } from "@/components/poker/RoomView";
 import { PokerToaster } from "@/components/poker/PokerToaster";
 const ROOM_ID_RE = /^[0-9a-f]{40}$/;
@@ -16,7 +17,7 @@ export default function PublicRoomPage() {
     const lang = usePoker((s) => s.lang);
     const t = usePoker((s) => s.t);
     const [hydrated, setHydrated] = useState(false);
-    const tag = hydrated ? t("room.publicPage") : "Tournament Room";
+    const tag = hydrated ? t("room.publicPage") : "Contest";
     void lang;     useEffect(() => {
         const id = setTimeout(() => {
             const saved = loadLangFromStorage();
@@ -36,17 +37,16 @@ export default function PublicRoomPage() {
           <span className="ml-auto text-[10px] font-bold uppercase tracking-[0.14em] text-white/45" data-testid="room-page-tag">
             {tag}
           </span>
+          <ThemeToggle testid="btn-theme-room"/>
         </div>
       </div>
 
-      {valid ? (<RoomPanel roomId={roomId} standalone/>) : (<div className="min-h-[70dvh] flex flex-col items-center justify-center text-center px-4 gap-3">
+      {valid ? (<RoomPanel roomId={roomId}/>) : (<div className="min-h-[70dvh] flex flex-col items-center justify-center text-center px-4 gap-3">
           <p className="text-4xl" aria-hidden>🃏</p>
-          <p className="font-black text-[15px]">Invalid Room ID</p>
-          <p className="text-[12px] text-white/50 max-w-sm">
-            A Room ID is a 40-character hexadecimal identifier (the same length as an EVM address without the 0x prefix).
-          </p>
+          <p className="font-black text-[15px]">{t("room.invalidId")}</p>
+          <p className="text-[12px] text-white/50 max-w-sm">{t("room.enterIdHint")}</p>
           <Link href="/" className="btn-brand rounded-xl px-5 py-2.5 text-[12.5px] font-black mt-2">
-            ← Poker Kings
+            {t("room.backHome")}
           </Link>
         </div>)}
 
