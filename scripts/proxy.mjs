@@ -94,7 +94,13 @@ server.on("upgrade", (req, clientSocket, head) => {
 
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
     const lines = Object.entries(proxyRes.headers)
-      .filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))
+      .filter(([k]) => {
+        const lower = k.toLowerCase();
+        // A 101 response must carry Connection/Upgrade — never strip them,
+        // or the browser aborts the handshake ("Upgrade header is missing").
+        if (lower === "connection" || lower === "upgrade") return true;
+        return !HOP_BY_HOP.has(lower);
+      })
       .map(([k, v]) => `${k}: ${v}`);
     clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join("\r\n")}\r\n\r\n`);
     if (proxyHead?.length) clientSocket.unshift(proxyHead);
@@ -110,7 +116,7 @@ server.on("upgrade", (req, clientSocket, head) => {
     clientSocket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
   proxyReq.on("error", () => clientSocket.destroy());
-  if (head?.length) proxyReq.unshift(head);
+  if (head?.length) proxyReq.write(head);
   proxyReq.end();
 });
 

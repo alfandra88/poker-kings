@@ -1,0 +1,11 @@
+{
+  "name": "Poker Kings",
+  "description": "Free-to-play multiplayer poker tables with your friends",
+  "tests": [
+    {
+      "name": "Home renders",
+      "path": "/",
+      "expectText": "Play poker online with your friends"
+    }
+  ]
+}
