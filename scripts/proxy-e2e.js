@@ -21,7 +21,10 @@ try {
 console.log(`proxy E2E via ${BASE}`);
 
 const sock = io(`${BASE}/?XTransformPort=44447`, {
-  transports: ["polling"],
+  // Same transport order as the web frontend (src/lib/poker/store.js), so
+  // this test exercises the websocket upgrade through the proxy, not just
+  // polling. "websocket" first with no fallback is what players really use.
+  transports: ["websocket", "polling"],
   timeout: 15000,
 });
 

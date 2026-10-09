@@ -141,6 +141,11 @@
   --info: #58a6ff;
   --text-1: #f4f7fa;
   --text-2: #98a5b8;
+  /* System font stacks: Google fonts were dropped because the platform builder
+     has no network to fetch them at build time (next/font/google fails the
+     whole `next build` there). The stacks below take their place. */
+  --font-body: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-card: Georgia, "Times New Roman", serif;
   --glass-bg: rgba(255, 255, 255, 0.055);
   --glass-brd: rgba(255, 255, 255, 0.09);
