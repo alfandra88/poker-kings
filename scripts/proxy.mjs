@@ -93,11 +93,22 @@ server.on("upgrade", (req, clientSocket, head) => {
   });
 
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+    // Connection/Upgrade are hop-by-hop for a normal relay, but this hop IS
+    // the websocket upgrade itself: the relayed 101 must keep both headers or
+    // the client rejects the handshake.
     const lines = Object.entries(proxyRes.headers)
-      .filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))
+      .filter(([k]) => {
+        const name = k.toLowerCase();
+        return name !== "connection" && name !== "upgrade" && !HOP_BY_HOP.has(name);
+      })
       .map(([k, v]) => `${k}: ${v}`);
+    lines.push("connection: Upgrade", "upgrade: websocket");
     clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join("\r\n")}\r\n\r\n`);
-    if (proxyHead?.length) clientSocket.unshift(proxyHead);
+    // Bytes that rode in with the 101 (e.g. the engine.io OPEN packet
+    // coalesced into the same TCP write) flow server->client: WRITE them to
+    // the browser socket. unshift() would push them onto clientSocket's read
+    // side, and pipe() below would send them back upstream instead.
+    if (proxyHead?.length) clientSocket.write(proxyHead);
     clientSocket.setNoDelay(true);
     proxySocket.setNoDelay(true);
     proxySocket.on("error", () => clientSocket.destroy());
@@ -110,7 +121,8 @@ server.on("upgrade", (req, clientSocket, head) => {
     clientSocket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
   proxyReq.on("error", () => clientSocket.destroy());
-  if (head?.length) proxyReq.unshift(head);
+  // Bytes the browser sent along with its upgrade request flow client->server.
+  if (head?.length) proxyReq.write(head);
   proxyReq.end();
 });
 
