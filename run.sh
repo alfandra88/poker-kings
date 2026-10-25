@@ -137,10 +137,12 @@ case "$ACTION" in
 esac
 
 # ───────────────────────────── preflight ─────────────────────────────
-need bun
 # The proxy MUST run on node: Bun's http.Server does not flush WebSocket
 # upgrade sockets, which breaks Socket.IO through the proxy.
 need node
+# bun is only needed for dev mode's hot reload (`bun run dev`); production
+# runs on plain node, the same as the container runtime.
+if [ "$MODE" = "dev" ]; then need bun; fi
 echo "Poker Kings — starting in $MODE mode"
 echo "  ports: public=$PUBLIC_PORT next=$NEXT_PORT socket=$SOCKET_PORT rest=$REST_PORT"
 
@@ -156,7 +158,7 @@ done
 echo "starting realtime service…"
 ( cd mini-services/poker-service
   POKER_SERVICE_PORT="$SOCKET_PORT" POKER_REST_PORT="$REST_PORT" \
-    exec bun index.js ) >"$LOG_DIR/realtime.log" 2>&1 &
+    exec node index.js ) >"$LOG_DIR/realtime.log" 2>&1 &
 echo $! > "$RUN_DIR/realtime.pid"
 wait_for "$SOCKET_PORT" realtime 20
 wait_for "$REST_PORT" realtime-rest 20
@@ -178,7 +180,7 @@ fi
 # ───────────────────────── build (production) ─────────────────────────
 if [ "$DO_BUILD" = "1" ] || [ ! -f ".next/standalone/server.js" ]; then
   echo "building…"
-  if ! bun run build >"$LOG_DIR/build.log" 2>&1; then
+  if ! npm run build >"$LOG_DIR/build.log" 2>&1; then
     echo "  FAIL build — see $LOG_DIR/build.log" >&2
     tail -30 "$LOG_DIR/build.log" >&2
     exit 1
@@ -191,7 +193,7 @@ echo "starting web (standalone)…"
 # The room proxy reaches REST over 127.0.0.1, so tell it the real REST port.
 POKER_REST_PORT="$REST_PORT" \
 NODE_ENV=production HOSTNAME=127.0.0.1 PORT="$NEXT_PORT" \
-  bun .next/standalone/server.js >"$LOG_DIR/web.log" 2>&1 &
+  node .next/standalone/server.js >"$LOG_DIR/web.log" 2>&1 &
 echo $! > "$RUN_DIR/web.pid"
 wait_for "$NEXT_PORT" web 40
 
