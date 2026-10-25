@@ -81,6 +81,17 @@ PORT=8080 ./run.sh       # different public port
 Only the proxy listens publicly; the app, realtime service and REST stay bound
 to localhost. Logs land in `logs/`.
 
+### Container / staging builds (npm, node-only)
+
+The hosting platform builds this repo with **npm** (kpack) and runs it with
+plain **node** — no Bun in the container. `npm start`
+(`scripts/start-production.mjs`) launches the same three processes on the
+platform's public `$PORT`.
+
+> **Rule:** after any dependency change, run `npm install` and commit the
+> refreshed `package-lock.json` (and `bun.lock`) together — the container
+> build installs from the npm lockfile, local dev from the bun one.
+
 > **Why a proxy?** The browser client bootstraps its socket with
 > `io("/?XTransformPort=44447")` — a rewrite convention meant for a hosting
 > platform that proxies that port automatically. On a plain server nothing

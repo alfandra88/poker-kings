@@ -55,3 +55,5 @@ server.log
 # run.sh runtime state
 logs/
 .run/
+# realtime service runtime state (wallets/profiles)
+mini-services/data/

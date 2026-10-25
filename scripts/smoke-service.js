@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(import.meta.dirname, "..");
 const SVC_DIR = join(ROOT, "mini-services/poker-service");
 const PORT = 3013;
 
@@ -23,7 +23,7 @@ if (!existsSync(join(SVC_DIR, "index.js"))) {
   process.exit(1);
 }
 
-const svc = spawn("bun", ["index.js"], {
+const svc = spawn("node", ["index.js"], {
   cwd: SVC_DIR,
   env: { ...process.env, POKER_SERVICE_PORT: String(PORT), POKER_REST_PORT: String(PORT + 1) },
   stdio: ["ignore", "pipe", "pipe"],

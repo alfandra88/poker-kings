@@ -1,15 +1,21 @@
-import { Space_Grotesk, Inter } from "next/font/google";
+// Fonts are committed locally (latin variable subsets): next/font/google
+// downloads from fonts.googleapis.com at build time, which fails in the
+// offline container build.
+import localFont from "next/font/local";
+import Script from "next/script";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-const display = Space_Grotesk({
+const display = localFont({
+    src: "./fonts/space-grotesk-latin.woff2",
     variable: "--font-display",
-    subsets: ["latin"],
-    weight: ["400", "500", "700"],
+    weight: "300 700",
+    display: "swap",
 });
-const body = Inter({
+const body = localFont({
+    src: "./fonts/inter-latin.woff2",
     variable: "--font-body",
-    subsets: ["latin"],
-    weight: ["400", "500", "700", "900"],
+    weight: "100 900",
+    display: "swap",
 });
 export const metadata = {
     title: "Poker Kings — Free Poker with Friends",
@@ -35,6 +41,10 @@ export const viewport = {
 export default function RootLayout({ children }) {
     return (<html lang="en" className="dark" suppressHydrationWarning>
       <body className={`${display.variable} ${body.variable} antialiased`}>
+        {/* Platform bridge — centrally hosted, relative path only. It is how
+            the app answers the shell (offline launch included), so it loads
+            before anything interactive. */}
+        <Script src="/usernode-bridge/v1/bridge.js" strategy="beforeInteractive" />
         {children}
         <Toaster />
       </body>

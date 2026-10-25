@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(import.meta.dirname, "..");
 const CHECK_ONLY = process.argv.includes("--check");
 
 const TARGET = "#27bef5";

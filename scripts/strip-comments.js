@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(import.meta.dirname, "..");
 const DRY = process.argv.includes("--dry");
 
 const MARKERS = /PRIVACY|FAIRPLAY|invariant|CRITICAL|security/i;

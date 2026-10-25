@@ -93,9 +93,13 @@ server.on("upgrade", (req, clientSocket, head) => {
   });
 
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
-    const lines = Object.entries(proxyRes.headers)
-      .filter(([k]) => !HOP_BY_HOP.has(k.toLowerCase()))
-      .map(([k, v]) => `${k}: ${v}`);
+    // Re-add the hop-by-hop upgrade headers: without them the browser's HTTP
+    // stack never recognises the 101 as an upgrade and the WebSocket dies.
+    const echoHeaders = Object.entries(proxyRes.headers).filter(
+      ([k]) => !HOP_BY_HOP.has(k.toLowerCase()),
+    );
+    echoHeaders.push(["connection", "Upgrade"], ["upgrade", proxyRes.headers.upgrade ?? "websocket"]);
+    const lines = echoHeaders.map(([k, v]) => `${k}: ${v}`);
     clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join("\r\n")}\r\n\r\n`);
     if (proxyHead?.length) clientSocket.unshift(proxyHead);
     clientSocket.setNoDelay(true);

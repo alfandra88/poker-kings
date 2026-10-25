@@ -1,0 +1,16 @@
+{
+  "tests": [
+    {
+      "id": "home.default",
+      "name": "Home loads",
+      "path": "/",
+      "expectText": "Play poker online with your friends",
+      "visual": true,
+      "impact": ["src/**", "package.json", "next.config.mjs", "scripts/**", "dapp.json"]
+    },
+    {
+      "name": "Home without console errors",
+      "path": "/"
+    }
+  ]
+}
